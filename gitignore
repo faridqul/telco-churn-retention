@@ -1,0 +1,25 @@
+# Generated model artifacts (recreated by running the notebook end to end)
+*.pkl
+model_metadata.json
+simulated_new_customers.csv
+retention_campaign_targets.csv
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Virtual environments
+venv/
+.venv/
+
+# uv
+.uv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor clutter
+.DS_Store
+.vscode/
+.idea/
