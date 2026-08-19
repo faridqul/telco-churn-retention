@@ -1,7 +1,7 @@
 [project]
 name = "ml-projects-4"
 version = "0.1.0"
-description = "hello world or whatever"
+description = "Profit-optimized customer churn prediction and retention targeting for telecom, with FastAPI deployment"
 readme = "README.md"
 authors = [
     { name = "yaponskihue", email = "faridlvrl@gmail.com" }
