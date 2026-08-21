@@ -5,7 +5,7 @@ model's predictions are accurate (same philosophy as test_api.py: the
 model here is a mocked stand-in, so these tests run fast and don't
 depend on a trained .pkl or model_metadata.json existing on disk).
 
-Run with: pytest test_telco_model.py -v
+Run with: pytest tests/test_telco_model.py -v
 """
 
 import numpy as np

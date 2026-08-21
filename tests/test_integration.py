@@ -17,7 +17,7 @@ anything real. It only proves the plumbing (engineer_features ->
 ColumnTransformer -> XGBClassifier) actually fits and predicts without
 raising, with no internet access or pre-trained model required.
 
-Run with: pytest test_integration.py -v
+Run with: pytest tests/test_integration.py -v
 """
 
 import numpy as np

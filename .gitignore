@@ -29,4 +29,4 @@ venv/
 .idea/
 
 # Local scratch notes (kept on disk, not part of the repo)
-nothing
+AUDIT.md

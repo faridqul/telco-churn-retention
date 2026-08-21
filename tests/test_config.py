@@ -1,7 +1,7 @@
 """Tests for config.validate_feature_schema, config.load_threshold, and
 config.validate_environment_versions.
 
-Run with: pytest test_config.py -v
+Run with: pytest tests/test_config.py -v
 """
 
 import json

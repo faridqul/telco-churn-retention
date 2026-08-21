@@ -1,5 +1,7 @@
 # Telco Customer Churn — Profit-Optimized Retention Targeting
 
+[![tests](https://github.com/faridqul/telco-churn-retention/actions/workflows/tests.yml/badge.svg)](https://github.com/faridqul/telco-churn-retention/actions/workflows/tests.yml)
+
 Predicts which customers are likely to churn, and — more importantly — decides
 *which of them are worth targeting with a retention campaign*, given the real
 economics of that campaign. The operating threshold isn't chosen by accuracy
@@ -220,12 +222,14 @@ telco_model.py                # batch scoring script (CSV in, CSV out)
 api.py                        # FastAPI service (POST /predict)
 config.py                     # shared config: threshold loading, feature-schema
                                # validation, artifact paths (env-var overridable)
-test_feature_engineering.py   # unit tests for feature_engineering_telco.py
-test_api.py                   # smoke tests for the FastAPI service
-test_config.py                # unit tests for validate_feature_schema and load_threshold
-test_telco_model.py           # smoke tests for the batch scoring script
-test_integration.py           # fits the real pipeline (no mocks) on synthetic data
+tests/
+  test_feature_engineering.py # unit tests for feature_engineering_telco.py
+  test_api.py                 # smoke tests for the FastAPI service
+  test_config.py              # unit tests for validate_feature_schema and load_threshold
+  test_telco_model.py         # smoke tests for the batch scoring script
+  test_integration.py         # fits the real pipeline (no mocks) on synthetic data
 pyproject.toml                # dependencies (managed with uv)
+.github/workflows/tests.yml   # CI: runs the test suite on every push and PR
 
 verify_version_check.sh       # integration check: builds two throwaway venvs and
                                # verifies the version-drift warning actually fires
@@ -337,8 +341,6 @@ ever running the notebook.
   distribution and periodically retrain. The feature-schema check catches
   *code/model* drift, not *data* drift (e.g. the input population changing
   over time).
-- No CI pipeline — tests exist and pass locally, but nothing runs them
-  automatically on push.
 - Would containerize with Docker for consistent deployment across
   environments.
 - Hyperparameter search is currently `RandomizedSearchCV`; a Bayesian search
