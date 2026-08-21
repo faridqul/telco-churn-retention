@@ -26,12 +26,24 @@ class DummyModel:
 
 @pytest.fixture
 def client(monkeypatch):
-    """Patches out joblib.load and load_threshold so these tests don't
-    require a real xgboost_churn_pipeline.pkl / model_metadata.json to be
-    present on disk. Threshold is fixed at 0.5 so predictions are
-    deterministic for the assertions below."""
+    """Patches out every startup call that touches disk or the real
+    environment, so these tests don't require a real
+    xgboost_churn_pipeline.pkl / model_metadata.json to be present, and
+    don't depend on the versions of sklearn/xgboost installed wherever
+    pytest happens to run. Threshold is fixed at 0.5 so predictions are
+    deterministic for the assertions below.
+
+    NOTE: prior to this fixture, validate_feature_schema() was NOT
+    mocked here despite the docstring claiming full isolation -- it ran
+    for real against whatever model_metadata.json happened to sit in the
+    working directory. That happened to work because the repo ships one
+    at its root, not because these tests were actually isolated. Fixed
+    here alongside adding the same isolation for validate_environment_
+    versions()."""
     monkeypatch.setattr(api_module.joblib, "load", lambda path: DummyModel())
     monkeypatch.setattr(api_module, "load_threshold", lambda: 0.5)
+    monkeypatch.setattr(api_module, "validate_feature_schema", lambda: None)
+    monkeypatch.setattr(api_module, "validate_environment_versions", lambda: None)
     with TestClient(api_module.app) as test_client:
         yield test_client
 

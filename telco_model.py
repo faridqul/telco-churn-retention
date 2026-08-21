@@ -1,7 +1,12 @@
 import joblib
 import pandas as pd
 
-from config import MODEL_PATH, load_threshold, validate_feature_schema
+from config import (
+    MODEL_PATH,
+    load_threshold,
+    validate_environment_versions,
+    validate_feature_schema,
+)
 from feature_engineering_telco import engineer_features
 
 INPUT_PATH = "simulated_new_customers.csv"
@@ -10,6 +15,7 @@ OUTPUT_PATH = "retention_campaign_targets.csv"
 
 def main():
     validate_feature_schema()  # fail fast on feature/model schema drift
+    validate_environment_versions()  # warns (does not block) on library version drift
     threshold = load_threshold()
     print(f"Using threshold: {threshold}")
 

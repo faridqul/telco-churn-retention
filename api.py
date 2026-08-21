@@ -5,7 +5,12 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-from config import MODEL_PATH, load_threshold, validate_feature_schema
+from config import (
+    MODEL_PATH,
+    load_threshold,
+    validate_environment_versions,
+    validate_feature_schema,
+)
 from feature_engineering_telco import engineer_features
 
 from contextlib import asynccontextmanager
@@ -55,6 +60,7 @@ async def lifespan(app: FastAPI):
     # Startup: runs once, before the app starts accepting requests.
     global model, threshold
     validate_feature_schema()  # fail fast on feature/model schema drift
+    validate_environment_versions()  # warns (does not block) on library version drift
     threshold = load_threshold()
     print(f"Using threshold: {threshold}")
     model = joblib.load(MODEL_PATH)

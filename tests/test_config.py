@@ -1,4 +1,5 @@
-"""Tests for config.validate_feature_schema and config.load_threshold.
+"""Tests for config.validate_feature_schema, config.load_threshold, and
+config.validate_environment_versions.
 
 Run with: pytest test_config.py -v
 """
@@ -7,6 +8,7 @@ import json
 
 import pytest
 
+import config
 from config import DEFAULT_THRESHOLD, load_threshold, validate_feature_schema
 
 # Copied verbatim from the real model_metadata.json's feature_columns list,
@@ -83,3 +85,95 @@ def test_load_threshold_falls_back_when_value_not_castable_to_float(tmp_path):
     path = tmp_path / "meta.json"
     path.write_text(json.dumps({"threshold": "not-a-number"}))
     assert load_threshold(str(path)) == DEFAULT_THRESHOLD
+
+
+# ---------------------------------------------------------------------------
+# validate_environment_versions -- joblib/pickle ties a Pipeline's
+# serialized state to the exact scikit-learn/XGBoost version that created
+# it, so a version drift between training and runtime is worth surfacing.
+# This is a warn-only detection control, never a fatal one: it must not
+# raise under any input here, only print. _current_library_versions is
+# monkeypatched throughout so these tests don't depend on any particular
+# library version actually being installed.
+# ---------------------------------------------------------------------------
+
+FAKE_CURRENT_VERSIONS = {
+    "scikit-learn": "1.9.2",
+    "xgboost": "3.4.1",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5",
+}
+
+
+def test_validate_environment_versions_no_warning_when_versions_match(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(config, "_current_library_versions", lambda: FAKE_CURRENT_VERSIONS)
+    metadata = {"library_versions": FAKE_CURRENT_VERSIONS}
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata))
+    config.validate_environment_versions(str(path))  # should not raise
+    assert "WARNING" not in capsys.readouterr().out
+
+
+def test_validate_environment_versions_warns_but_never_raises_on_mismatch(
+    tmp_path, monkeypatch, capsys
+):
+    """Covers a real, plausible drift (e.g. an unpinned '>=' dependency in
+    pyproject.toml pulling a newer scikit-learn after retraining). Must
+    warn loudly but must NOT raise -- this is a detection control, not a
+    gate; a hard block belongs in CI, not in the live API's boot path."""
+    monkeypatch.setattr(config, "_current_library_versions", lambda: FAKE_CURRENT_VERSIONS)
+    trained_versions = {**FAKE_CURRENT_VERSIONS, "scikit-learn": "2.0.0"}
+    metadata = {"library_versions": trained_versions}
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata))
+    config.validate_environment_versions(str(path))  # should not raise
+    out = capsys.readouterr().out
+    assert "WARNING" in out
+    assert "scikit-learn" in out
+
+
+def test_validate_environment_versions_warns_even_on_patch_only_difference(
+    tmp_path, monkeypatch, capsys
+):
+    """Deliberate design choice: this compares full version strings, not
+    just major.minor, and doesn't try to guess which differences are
+    'safe' -- that guessing is exactly what a previous, more complex
+    version of this function got subtly wrong. A patch-level difference
+    still gets reported; it's just a warning, so the cost of a false
+    positive here is low."""
+    monkeypatch.setattr(config, "_current_library_versions", lambda: FAKE_CURRENT_VERSIONS)
+    trained_versions = {**FAKE_CURRENT_VERSIONS, "xgboost": "3.4.0"}
+    metadata = {"library_versions": trained_versions}
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata))
+    config.validate_environment_versions(str(path))  # should not raise
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_validate_environment_versions_skips_when_key_missing(tmp_path, monkeypatch, capsys):
+    """model_metadata.json trained before this check existed won't have a
+    'library_versions' key -- must degrade to a warning, not crash
+    startup."""
+    monkeypatch.setattr(config, "_current_library_versions", lambda: FAKE_CURRENT_VERSIONS)
+    metadata = {"threshold": 0.4}
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata))
+    config.validate_environment_versions(str(path))  # should not raise
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_validate_environment_versions_ignores_untracked_library(
+    tmp_path, monkeypatch, capsys
+):
+    """A library recorded in metadata that the current code doesn't track
+    (e.g. metadata from a newer schema version) shouldn't be reported as
+    a mismatch -- just skipped."""
+    monkeypatch.setattr(config, "_current_library_versions", lambda: FAKE_CURRENT_VERSIONS)
+    trained_versions = {**FAKE_CURRENT_VERSIONS, "shap": "0.52.0"}
+    metadata = {"library_versions": trained_versions}
+    path = tmp_path / "meta.json"
+    path.write_text(json.dumps(metadata))
+    config.validate_environment_versions(str(path))  # should not raise
+    assert "WARNING" not in capsys.readouterr().out

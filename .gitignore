@@ -26,3 +26,6 @@ venv/
 .DS_Store
 .vscode/
 .idea/
+
+# Local scratch notes (kept on disk, not part of the repo)
+nothing

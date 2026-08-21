@@ -38,10 +38,11 @@ RAW_CUSTOMER_ROW = {
 @pytest.fixture
 def isolated_run(tmp_path, monkeypatch):
     """Points INPUT_PATH/OUTPUT_PATH at tmp_path and mocks out
-    validate_feature_schema, load_threshold, and joblib.load -- mirrors
-    test_api.py's client fixture. No real .pkl or model_metadata.json
-    required, and nothing is written outside tmp_path. Returns the output
-    path so tests can read back what main() wrote."""
+    validate_feature_schema, validate_environment_versions,
+    load_threshold, and joblib.load -- mirrors test_api.py's client
+    fixture. No real .pkl or model_metadata.json required, and nothing
+    is written outside tmp_path. Returns the output path so tests can
+    read back what main() wrote."""
     input_path = tmp_path / "simulated_new_customers.csv"
     output_path = tmp_path / "retention_campaign_targets.csv"
 
@@ -50,6 +51,7 @@ def isolated_run(tmp_path, monkeypatch):
     monkeypatch.setattr(telco_model, "INPUT_PATH", str(input_path))
     monkeypatch.setattr(telco_model, "OUTPUT_PATH", str(output_path))
     monkeypatch.setattr(telco_model, "validate_feature_schema", lambda: None)
+    monkeypatch.setattr(telco_model, "validate_environment_versions", lambda: None)
     monkeypatch.setattr(telco_model, "load_threshold", lambda: 0.5)
     monkeypatch.setattr(telco_model.joblib, "load", lambda path: DummyModel())
 
@@ -111,6 +113,7 @@ def test_main_raises_when_input_csv_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(telco_model, "INPUT_PATH", str(missing_input))
     monkeypatch.setattr(telco_model, "OUTPUT_PATH", str(output_path))
     monkeypatch.setattr(telco_model, "validate_feature_schema", lambda: None)
+    monkeypatch.setattr(telco_model, "validate_environment_versions", lambda: None)
     monkeypatch.setattr(telco_model, "load_threshold", lambda: 0.5)
     monkeypatch.setattr(telco_model.joblib, "load", lambda path: DummyModel())
 
