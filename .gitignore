@@ -1,7 +1,8 @@
-# Generated model artifacts (recreated by running the notebook end to end)
-*.pkl
-model_metadata.json
-simulated_new_customers.csv
+# Scoring output -- regenerated on every run of telco_model.py.
+# The trained artifacts (xgboost_churn_pipeline.pkl, model_metadata.json)
+# and the sample input (simulated_new_customers.csv) are deliberately
+# committed instead, so the API and batch script run straight after a
+# clone without re-running the notebook first.
 retention_campaign_targets.csv
 
 # Python

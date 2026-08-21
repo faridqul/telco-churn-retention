@@ -1,0 +1,43 @@
+{
+  "threshold": 0.4,
+  "model": "XGBoost (Tuned)",
+  "cv_roc_auc_mean": 0.849141178092052,
+  "cv_roc_auc_std": 0.017473991027652763,
+  "trained_at": "2026-08-21T00:27:52.501841+00:00",
+  "git_commit": "42e80c51bda1cffdfd375b60e664a5dd24fa8130",
+  "feature_schema_version": "1.0",
+  "hash": "e509e674fc08e00ab0cc0b9bdc61fb26128e65c24d272ab9f68a7271c59f043e",
+  "library_versions": {
+    "scikit-learn": "1.9.0",
+    "xgboost": "3.4.1",
+    "numpy": "2.5.2",
+    "pandas": "3.0.5"
+  },
+  "feature_columns": [
+    "gender",
+    "seniorcitizen",
+    "partner",
+    "dependents",
+    "tenure",
+    "phoneservice",
+    "multiplelines",
+    "internetservice",
+    "onlinesecurity",
+    "onlinebackup",
+    "deviceprotection",
+    "techsupport",
+    "streamingtv",
+    "streamingmovies",
+    "contract",
+    "paperlessbilling",
+    "paymentmethod",
+    "monthlycharges",
+    "totalcharges",
+    "total_services",
+    "is_auto_pay",
+    "family_tie",
+    "contractvstenure",
+    "average_monthly_charges",
+    "charge_change_ratio"
+  ]
+}
