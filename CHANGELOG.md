@@ -1045,3 +1045,96 @@ substitutions that assert their target exists before writing, and the results
 were read back. The test count and timing come from a real `uv run pytest -q`
 run (113 passed, 1.99 s). No tests were run for this change specifically — it
 is documentation and touches no code. Not committed.
+
+---
+
+## 2026-08-22 — Guard engineer_features()'s .str use against a blank column (M9)
+
+**Files touched:**
+- `feature_engineering_telco.py`
+- `tests/test_feature_engineering.py`
+- `AUDIT.md`
+
+**What changed:** `is_auto_pay` was computed with
+`df['paymentmethod'].str.contains('automatic', case=False, na=False)`. A CSV
+whose `paymentmethod` column is entirely blank reads back from `read_csv` as
+`float64`, and the `.str` accessor on a float column raises
+`AttributeError: Can only use .str accessor with string values, not floating`
+— an error that names pandas internals rather than the actual problem. The
+`na=False` argument already handled *individual* missing values correctly; it
+is the whole-column dtype change that broke it.
+
+The column is now converted with `.astype('string')` before `.str` is used, so
+a blank column degrades to `is_auto_pay=0` exactly the way individual missing
+values already did. Zero is the consistent answer: a payment method that isn't
+known isn't an automatic one.
+
+Five tests were added. One covers the blank-column case directly. Three
+parametrized cases cover dtypes that must keep behaving identically —
+pandas `StringDtype` (what a pyarrow-backed read produces), a categorical
+column, and a single missing value among strings — because the risk in adding
+an `astype` is that it changes the ordinary cases, not the broken one. The
+last covers a zero-row frame, which must still produce all 25 columns rather
+than raising.
+
+**Why:** You asked for worklist item 5, "Schema validation on the batch path
+(M1, M9)". **M1 was already fixed and ticked earlier in this session** — the
+batch scorer has validated its input against the trained categories since the
+`0aa8819` commit — so M9 was the remaining half. The audit's own note on M9
+says it is "subsumed by M1", because the batch path now rejects a blank column
+earlier and with a far better message. That is true and was verified. The
+local guard was still worth adding because `engineer_features()` is imported
+directly by the notebook and by `api.py`, not only by the batch script, so it
+should not depend on its caller having validated first.
+
+**Requested or incidental:** Requested, with the scope correction noted above
+— M9 rather than M1+M9, because M1 was already done. Flagged as beyond the
+literal ask: the four dtype and empty-frame tests go past what the audit
+suggested, and the `AUDIT.md`, `CLAUDE.md` and `README.md` updates were taken
+on initiative. The `CLAUDE.md` edit is logged separately below.
+
+**Verification status:** Reproduced with the audit's own command before the
+change, producing exactly the documented `AttributeError`. After the change
+the same input returns `is_auto_pay=[0, 0]` with all 25 columns intact.
+
+Because this is the project's most load-bearing module, the change was checked
+for regressions rather than assumed safe. All four real payment methods still
+map correctly — the two "(automatic)" ones to 1, the two manual ones to 0.
+`StringDtype`, categorical, mixed-missing and empty-frame inputs were each
+exercised and all behave identically to a plain object column. Most
+importantly, the committed artifact's pinned prediction is byte-identical:
+`DUMMY_CUSTOMER` still scores `0.5699995160102844`, matching
+`model_metadata.json["dummy_customer_score"]` exactly, so the change provably
+did not alter what the model sees. `telco_model.py` was run end to end and
+still flags the same 15 of 50 customers, and the batch path was confirmed to
+still reject a blank `paymentmethod` column upfront with the readable message
+rather than reaching this code at all. Suite: **118 tests passing**, up from
+113. **Not committed.**
+
+---
+
+## 2026-08-22 — Note the .str guard in CLAUDE.md
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** The `feature_engineering_telco.py` row in the file-layout
+table now records that the module guards its own `.str` use, with an all-blank
+`paymentmethod` degrading to `is_auto_pay=0` rather than raising, and cites
+AUDIT M9. The `tests/` row went from "113 tests, ~2.0 s" to "118 tests,
+~2.0 s".
+
+**Why:** The `.astype('string')` call looks like redundant noise next to a
+`.str` accessor — it is the kind of thing a future session would remove while
+tidying, since `na=False` appears to already cover missing values. Recording
+what it defends against, in the file that loads automatically at the start of
+every session, is what prevents that.
+
+**Requested or incidental:** **Incidental.** You asked for the M9 fix; neither
+documentation edit was requested. Logged separately because `CLAUDE.md`
+requires any edit to itself to have its own entry, without exception.
+
+**Verification status:** Both edits applied by anchored string substitutions
+that assert their target exists first; results read back. The test count comes
+from a real `uv run pytest -q` run (118 passed). No tests run for this change
+specifically — documentation only. Not committed.
