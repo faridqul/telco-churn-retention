@@ -345,7 +345,7 @@ consumers cannot drift into accepting different inputs.
 ```
 uv run pytest -q
 ```
-103 tests, ~2 s. They cover feature engineering edge cases, API
+113 tests, ~2 s. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.

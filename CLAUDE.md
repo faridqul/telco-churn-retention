@@ -30,7 +30,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `tests/` | 103 tests, ~2.1 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 7 files at collection. |
+| `tests/` | 113 tests, ~2.0 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 7 files at collection. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
@@ -91,6 +91,10 @@ comparison · 36–37 SHAP · 38–40 save artifact.
 - `optuna`, `lightgbm`, `pyarrow` are declared in `pyproject.toml` and used
   nowhere. Don't assume Optuna is the tuner — it's `RandomizedSearchCV`.
 - The profit formula is duplicated in 5 places in the notebook (AUDIT.md C11).
+- `tests/test_integration.py`'s fixture forces the first `N_ZERO_TENURE_ROWS`
+  (3) rows to `tenure=0` so the missing-`totalcharges` rows are exact for
+  every seed — it used to leave that to chance and 21 of 40 seeds produced
+  none (AUDIT.md M7).
 - CI lives in `.github/workflows/tests.yml` — runs `uv run pytest -q` on
   every push and PR.
 

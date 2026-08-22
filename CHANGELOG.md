@@ -946,3 +946,102 @@ it was regenerated from a deliberately corrupted frame and matches
 character-for-character apart from the elisions marked `...`. The six original
 findings were re-grepped and confirmed gone. **Not committed at the time of
 writing.**
+
+---
+
+## 2026-08-22 — Make the integration fixture's tenure=0 rows deterministic
+
+**Files touched:**
+- `tests/test_integration.py`
+- `AUDIT.md`
+
+**What changed:** The synthetic fixture in `tests/test_integration.py` drew
+each row's tenure with `int(rng.integers(0, 60))`, which gives roughly a
+1-in-60 chance per row of producing a zero. A `tenure=0` row is what creates
+the missing `totalcharges` value that mirrors the eleven real such rows in the
+Kaggle dataset, and `test_pipeline_handles_missing_totalcharges` exists
+specifically to prove the real SimpleImputer absorbs them. At n=40, whether
+*any* such row appeared was close to a coin flip.
+
+Measured across the first 40 seeds, 21 of them — 52% — produced no missing
+`totalcharges` rows at all, and the default `seed=0` produced exactly one. The
+entire imputation test rested on that single row appearing by luck.
+
+To be fair to the original code, the test asserted its own precondition, so a
+bad seed failed loudly rather than passing silently; this was fragility rather
+than a false pass. But "change one integer and half the time the suite goes
+red for reasons unrelated to your change" is a genuine maintenance hazard, and
+one row is thin coverage for the behaviour under test.
+
+The fixture now forces the first `N_ZERO_TENURE_ROWS` (3) rows to `tenure=0`
+and draws the rest from 1..59, so no additional zeros can appear by accident
+and the count is exact rather than "at least one". A guard raises if `n` is
+small enough to leave no non-zero rows. The precondition assertion in
+`test_pipeline_handles_missing_totalcharges` was tightened from
+`.isna().any()` to an equality check against `N_ZERO_TENURE_ROWS`, since a
+drifting count now means the fixture itself changed, which is worth failing on.
+
+Two parametrized regression tests were added, each run over five seeds. The
+first asserts the missing-`totalcharges` count is exact and — more to the
+point — that missing values coincide exactly with `tenure == 0` in both
+directions, since that pairing is the real-data property being mirrored, not
+just the row count. The second asserts the fixture still spans every allowed
+categorical value and still contains both churn classes, because forcing the
+first rows to a fixed tenure must not cost the categorical coverage that is
+the fixture's other job. It checks against `config.CATEGORICAL_DOMAINS`, so it
+tracks the same domain map the rest of the project validates against.
+
+**Why:** You asked for roadmap item 4, AUDIT finding M7, by name.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+audit's suggested fix was the three forced rows alone; the two regression
+tests, the tightened assertion, the `n` guard, and the `AUDIT.md`,
+`CLAUDE.md` and `README.md` updates were added on initiative. The `CLAUDE.md`
+edit is logged separately below.
+
+**Verification status:** Reproduced first, then verified. The audit's own
+verification command was run before the change and returned exactly what it
+predicted — `21/40 seeds fail the precondition`, with `seed=0` producing one
+missing row. After the change the same command returns `0/40`, and a wider
+sweep over seeds 0–199 found the count was exactly 3 in every single case,
+with no other value occurring.
+
+Robustness was also checked the way a future maintainer would hit it: the
+fixture's default seed was temporarily changed from 0 to 13 — one of the
+seeds that previously produced zero missing rows — and the whole file was
+re-run, passing 15 of 15. The original file was restored afterwards. The full
+suite passes at **113 tests in 1.99 s**, up from 103. **Not committed** at the
+time of writing.
+
+---
+
+## 2026-08-22 — Note the integration fixture's determinism in CLAUDE.md
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** Two edits. A convention was added recording that
+`tests/test_integration.py`'s fixture forces its first `N_ZERO_TENURE_ROWS`
+(3) rows to `tenure=0` so the missing-`totalcharges` rows are exact for every
+seed, noting that this used to be left to chance and that 21 of 40 seeds
+produced none. The `tests/` row was updated from "103 tests, ~2.1 s" to
+"113 tests, ~2.0 s".
+
+**Why:** The forced rows look like an oddity if you don't know why they are
+there — a future session tidying the fixture could reasonably restore
+`rng.integers(0, 60)` as the more natural-looking code and silently reintroduce
+a 52% chance of unrelated failures. The regression tests would catch it, but
+the note explains the intent before someone spends time on it. `CLAUDE.md` is
+loaded automatically at the start of every session, so a stale test count
+there is misleading rather than merely out of date.
+
+**Requested or incidental:** **Incidental.** You asked for the fixture fix;
+neither documentation edit was requested. This entry is separate because
+`CLAUDE.md` requires any edit to itself to be logged in its own entry, without
+exception.
+
+**Verification status:** Both edits were applied by anchored string
+substitutions that assert their target exists before writing, and the results
+were read back. The test count and timing come from a real `uv run pytest -q`
+run (113 passed, 1.99 s). No tests were run for this change specifically — it
+is documentation and touches no code. Not committed.
