@@ -91,11 +91,12 @@ comparison · 36–37 SHAP · 38–40 save artifact.
 - `optuna`, `lightgbm`, `pyarrow` are declared in `pyproject.toml` and used
   nowhere. Don't assume Optuna is the tuner — it's `RandomizedSearchCV`.
 - Notebook cell 2 uses `warnings.simplefilter('once')`, not a blanket
-  `ignore` — don't restore the catch-all (AUDIT.md M5). Re-running cell 33
-  now surfaces ~1,457 warnings: `LogisticRegression`'s `penalty` argument
-  is deprecated in sklearn 1.8 and **removed in 1.10**, so that cell's
-  `penalty: ['l1','l2']` search will break on upgrade. Not yet fixed —
-  fixing it changes the published LR comparison numbers.
+  `ignore` — don't restore the catch-all (AUDIT.md M5). Lifting it exposed
+  ~1,457 deprecation warnings in cell 33, now fixed: that cell searches
+  `l1_ratio: [1.0, 0.0]` instead of the `penalty` argument scikit-learn
+  removes in 1.10. Same search space, but the code paths aren't
+  bit-identical — the LR row's ROC-AUC moved 0.843897 → 0.843891. Cell 33
+  now runs warning-free.
 - The profit formula is duplicated in 5 places in the notebook (AUDIT.md C11).
 - `tests/test_integration.py`'s fixture forces the first `N_ZERO_TENURE_ROWS`
   (3) rows to `tenure=0` so the missing-`totalcharges` rows are exact for

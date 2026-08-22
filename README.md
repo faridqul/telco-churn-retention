@@ -125,7 +125,7 @@ more false alarms too), which nets a higher profit under the stated cost
 assumptions.*
 
 **Model comparison** — XGBoost, Logistic Regression, and Random Forest
-converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843897 /
+converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843891 /
 0.844126, each well within one standard deviation of the others). Rather than
 read this as "the model choice didn't matter," I read it as evidence the
 dataset itself has an information ceiling around ROC-AUC ≈ 0.845 — churn here
@@ -146,7 +146,17 @@ threshold (same method as XGBoost's: a scan over 5-fold OOF predictions on
 |---|---|---|---|---|---|
 | XGBoost (Tuned) | 0.845812 | 0.019575 | 0.40 | 0.7876 | 26,640 |
 | Random Forest | 0.844126 | 0.016803 | 0.58 | 0.7810 | 27,000 |
-| Logistic Regression | 0.843897 | 0.018890 | 0.58 | 0.7762 | 26,240 |
+| Logistic Regression | 0.843891 | 0.018898 | 0.58 | 0.7758 | 26,200 |
+
+*The Logistic Regression row shifted in its last decimals when that model's
+search moved off scikit-learn's deprecated `penalty` argument to `l1_ratio`
+(removed in 1.10). The search space is identical — `l1_ratio=1.0` is pure L1,
+`0.0` is pure L2 — but the two code paths aren't numerically bit-identical, so
+ROC-AUC moved 0.843897 → 0.843891, about 6e-6, four orders of magnitude below
+this model's own 0.019 fold-to-fold std. Nothing about the ordering or the
+conclusion changes. These figures come from a faithful reconstruction of that
+cell rather than a full notebook re-run; the XGBoost and Random Forest rows
+are untouched by the change.*
 
 Random Forest edges out XGBoost on profit here (\$27,000 vs. \$26,640), but at
 a ROC-AUC gap of just 0.0017 — an order of magnitude smaller than the ~0.02

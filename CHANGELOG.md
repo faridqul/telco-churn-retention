@@ -1292,3 +1292,89 @@ extracted the cell and ran it standalone to confirm it still executes clean,
 and checked the notebook JSON round-tripped without disturbing anything else
 (11 insertions, 29 deletions, no image blobs touched). Test suite unaffected
 at 118 passing. Committed.
+
+---
+
+## 2026-08-22 — Move cell 33's Logistic Regression off the deprecated `penalty` argument
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (cell 33)
+- `README.md`
+- `CLAUDE.md`
+
+**What changed:** The model-comparison cell searched
+`'classifier__penalty': ['l1', 'l2']`. scikit-learn deprecated
+`LogisticRegression`'s `penalty` argument in 1.8 and removes it in 1.10, so
+that cell would have broken on a future upgrade. It now searches
+`'classifier__l1_ratio': [1.0, 0.0]` — 1.0 is pure L1, 0.0 is pure L2, the
+same two options — with `solver='liblinear'` unchanged. liblinear supports
+exactly those two endpoints and rejects anything between them, which is
+elasticnet and requires `saga`; that constraint was checked rather than
+assumed.
+
+**The search space is provably identical.** `ParameterSampler` sorts its keys,
+and `'classifier__l1_ratio'` occupies the same alphabetical position between
+`'classifier__C'` and `'classifier__solver'` that `'classifier__penalty'` did.
+Both were generated for 200 iterations at `random_state=42` and compared draw
+by draw: the `C` values match to within 1e-12 across all 200, and every
+`penalty` maps to its `l1_ratio` equivalent in the same position.
+
+**The results still move, in the last decimals.** The two code paths are not
+numerically bit-identical — fitting at a fixed `C` through `penalty='l1'` and
+through `l1_ratio=1.0` produces different coefficients — so the Logistic
+Regression row's ROC-AUC goes 0.843897 → 0.843891, a shift of about 6e-6.
+That is four orders of magnitude below this model's own 0.019 fold-to-fold
+standard deviation. The comparison table's ordering is unchanged and so is
+the README's information-ceiling conclusion.
+
+The full row was recomputed rather than partially estimated: Mean ROC-AUC
+0.843891, Std Dev 0.018898, best threshold 0.58 (unchanged), accuracy 0.7758,
+profit $26,200. `README.md`'s comparison table and the inline
+"0.845812 / 0.843897 / 0.844126" sentence were both updated, and a short note
+under the table explains the shift and states that these figures come from a
+reconstruction rather than a full notebook re-run. The XGBoost and Random
+Forest rows are untouched — the change cannot affect them.
+
+**A correction to a comment written earlier in this same turn.** The first
+version of the cell 33 comment asserted that the results were "unchanged.
+Verified by re-running the search both ways." That was wrong on the strength
+of the evidence available at the time: the identical *parameter draws* had
+been verified, and I generalised from that to identical *results* before the
+confirming run finished. Two further runs then showed otherwise. The comment
+was rewritten twice — once when the outputs first disagreed, and again when a
+second run showed that the winning `C` value I had attributed to the API
+change (6.3856 → 6.0803) was actually run-to-run instability: with
+`n_jobs=-1`, matching the notebook's own configuration, the new API selects
+the same `C=6.3856` the old one did. The ROC-AUC difference is systematic; the
+`C` difference was not. The committed comment states only what survived
+verification.
+
+**Why:** You asked for it, having read the note left in `CLAUDE.md` saying it
+was worth doing before the next scikit-learn bump. It also removes all 1,457
+deprecation warnings that the previous change exposed — cell 33 now runs
+warning-free.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+`README.md` table update was a necessary consequence rather than a separate
+decision, but it does change published numbers, and the `CLAUDE.md` update was
+taken on initiative.
+
+**Verification status:** Executed at full scale, three times, which is what
+caught the error described above. The 200-iteration × 5-fold search was run to
+completion under the old API (ROC-AUC 0.843896), under the new API single-
+threaded (0.843891, C=6.0803), and under the new API with `n_jobs=-1` matching
+the notebook (0.843891, C=6.3856, Std 0.018898) — the last of which also
+computed the out-of-fold threshold scan that produced the row's threshold,
+accuracy and profit figures. The code-path difference was confirmed separately
+by fitting at three fixed `C` values through both APIs and comparing
+coefficients directly. Solver support for `l1_ratio` was established by trying
+liblinear, saga and lbfgs at 0.0, 0.5 and 1.0. The new search emits **zero
+warnings**, down from 1,457.
+
+The notebook JSON round-tripped cleanly (22 insertions, 1 deletion, no image
+blobs disturbed), no executable `penalty` reference remains anywhere in the
+notebook, and the test suite is unaffected at 118 passing. **The notebook was
+not re-executed end to end**, so `xgboost_churn_pipeline.pkl` and
+`model_metadata.json` are unchanged and the shipped model is untouched — only
+the Logistic Regression comparison row, which is not part of the artifact.
+Committed.
