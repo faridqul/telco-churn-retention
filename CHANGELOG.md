@@ -1378,3 +1378,95 @@ not re-executed end to end**, so `xgboost_churn_pipeline.pkl` and
 `model_metadata.json` are unchanged and the shipped model is untouched — only
 the Logistic Regression comparison row, which is not part of the artifact.
 Committed.
+
+---
+
+## 2026-08-22 — Add a calibration curve on oof_proba (roadmap item 5)
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (two new cells inserted at positions 28 and 29)
+- `README.md`
+- `CLAUDE.md`
+- `AUDIT.md`
+
+**What changed:** A markdown cell and a code cell were inserted after the
+sensitivity sweep. The code cell plots a reliability curve of the tuned
+XGBoost model's out-of-fold predictions against observed churn, marks both
+the operating threshold and the closed-form optimum on it, and prints the
+numbers that connect the two.
+
+**The question it answers.** The profit formula has an exact optimum:
+targeting pays off when `p * success_rate * clv > cost`, so the break-even
+probability is `cost / (success_rate * clv)` — 0.333 at the baseline
+constants. The grid chose 0.40. More tellingly, *every* row of the
+sensitivity sweep sits above its own closed-form value, mean offset +0.046,
+15 of 15 positive. A one-directional gap that consistent is not search noise.
+
+It is calibration. The closed form assumes the model's output *is* a
+probability; the grid does not have to. Where the scores run hot, the grid
+compensates by demanding a higher one — so the empirical search is earning
+its keep rather than being a slower way to compute a formula. That is the
+justification for the whole threshold-selection approach, and nothing in the
+repo previously stated it.
+
+**A refinement on what the audit predicted.** `AUDIT.md` inferred from the
++0.046 threshold offset that "at any given score, the true churn rate is ~4.6
+points below what the model says." Measuring it directly shows the magnitude
+is right but the phrase "at any given score" is not: averaged across all bins
+the model runs only **+0.022** hot, but in the `[0.30, 0.50)` band where the
+decision is actually made it runs **+0.051** hot. The gap is concentrated
+where it matters. Those +0.051 and the sweep's +0.046 agree to within 0.004,
+which is what ties the two observations together — a single global
+"the model is X points optimistic" would have understated the effect exactly
+at the boundary. Brier score is 0.1342.
+
+The cell recomputes the sweep offset itself rather than quoting it, using the
+same `best_threshold_for` helper the sweep uses, so its central claim is
+self-verifying rather than a hardcoded number that can go stale.
+
+`README.md` gained a "Why the searched threshold sits above the closed form"
+subsection under the threshold-stability section, with the four measured
+figures in a small table and the two practical consequences: a raw score is
+not a probability (a customer scored 0.45 churns about 39% of the time), and
+calibrating would pull the empirical threshold toward 0.333 while leaving
+ROC-AUC unchanged, since it does not alter the ranking.
+
+**Cell numbering shifted.** Inserting two cells moved every index above 27 up
+by two. `CLAUDE.md`'s notebook cell map was updated accordingly (test-set
+scoring is now 30–33, model comparison 35, SHAP 38–39, save artifact 40–42)
+and now carries an explicit warning that `AUDIT.md` predates the shift and
+still uses the old numbering, so its "cell 33" is now 35 and its "cell 38" is
+now 40. `AUDIT.md`'s own findings were left as written rather than renumbered
+— it is a historical document.
+
+**Why:** You asked for roadmap item 5 by name.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+audit asked for a calibration curve, and the band-specific measurement, the
+self-recomputing sweep offset, and the README subsection go past that. The
+`CLAUDE.md` and `AUDIT.md` updates were taken on initiative, and the cell-map
+renumbering was forced by the insertion rather than chosen.
+
+**Verification status:** Every number in the new cell and in the README was
+measured, not carried over from the audit. `oof_proba` was reconstructed by
+running `cross_val_predict` with the committed pickle over a rebuilt
+`X_train` — 5,616 rows, mean predicted 0.2866 against an actual churn rate of
+0.2644 — and the sweep's mean offset was independently recomputed as +0.0464
+across 15 rows, all positive, matching the audit's +0.046.
+
+**The inserted cell was executed**, not merely written: it was extracted from
+the notebook and run against the reconstructed state under a headless
+matplotlib backend, confirming the plot renders and the printed figures are
+the ones quoted here. That run caught a real error in the first draft — the
+narrative compared the *baseline* row's offset (+0.067) against the band gap
+(+0.051) while claiming they agreed to within 0.005, which they do not. The
+cell was rewritten to compare the mean-across-sweep offset (+0.046) instead,
+which is the quantity that actually matches, and to say explicitly that a
+single row is a coarser read because it is one argmax on a flat curve. The
+corrected version was re-executed and its output verified line by line.
+
+The notebook JSON round-trips cleanly, the new code cell carries no baked-in
+outputs (`execution_count: None`, empty `outputs`), and the file now holds 43
+cells. **The notebook was not re-executed end to end** — no retraining, so
+`xgboost_churn_pipeline.pkl` and `model_metadata.json` are untouched. Test
+suite unaffected at 118 passing. Committed.

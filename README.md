@@ -218,6 +218,43 @@ correct given the current assumptions, not as precise figures — replacing
 the single highest-value next step before trusting this model's threshold in
 production.
 
+### Why the searched threshold sits above the closed form
+
+The profit formula has an exact optimum. Targeting a customer pays off when
+`p x success_rate x clv > cost`, so the break-even probability is
+`cost / (success_rate x clv)` — 0.333 at the baseline constants. The grid
+chose 0.40, and **every** row of the sweep above sits above its own
+closed-form value: mean offset **+0.046**, 15 of 15 rows positive. A
+consistent one-directional gap isn't search noise, so it's worth explaining
+rather than shrugging at.
+
+It's calibration. The closed form assumes the model's output *is* a
+probability; the grid doesn't have to. Measured on the same out-of-fold
+predictions:
+
+| Quantity | Value |
+|---|---|
+| Brier score | 0.1342 |
+| Mean calibration gap, all bins | +0.022 |
+| Calibration gap in `[0.30, 0.50)` — where the threshold sits | **+0.051** |
+| Mean threshold offset across the 15 sweep rows | **+0.046** |
+
+Those last two agree to within 0.004, which is the whole explanation: the
+model's probabilities run hot near the decision boundary, so the
+profit-maximizing cutoff moves up to compensate. Note the gap is *not*
+uniform — averaged across all bins the model is only 0.022 hot, roughly half
+what it is in the band that actually matters, so a single global "the model
+is X points optimistic" would understate the effect exactly where it counts.
+
+Two practical consequences. First, a raw score isn't a churn probability: a
+customer scored 0.45 by this model churns about 39% of the time, worth
+saying before anyone quotes a score to a stakeholder. Second, this is the
+honest justification for searching the threshold empirically instead of
+computing it — the closed form can't absorb miscalibration, so the grid is
+earning its keep. Calibrating (Platt or isotonic) would pull the empirical
+threshold toward 0.333 and would leave ROC-AUC unchanged, since it doesn't
+alter the ranking.
+
 ## Interpretability
 
 SHAP (`TreeExplainer`) is used against the final refit model to surface which

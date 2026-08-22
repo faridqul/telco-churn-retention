@@ -37,11 +37,16 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 
 ## Notebook cell map
 
-0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature engineering ·
-12 ColumnTransformer · 14–21 baselines/imbalance (marked removable) ·
-22–25 RandomizedSearchCV (200 iters) · **26 threshold selection via OOF —
-the heart** · 27 sensitivity sweep · 28–31 test-set scoring · 33 model
-comparison · 36–37 SHAP · 38–40 save artifact.
+43 cells. 0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature
+engineering · 12 ColumnTransformer · 14–21 baselines/imbalance (marked
+removable) · 22–25 RandomizedSearchCV (200 iters) · **26 threshold selection
+via OOF — the heart** · 27 sensitivity sweep · 28–29 calibration curve ·
+30–33 test-set scoring · 35 model comparison · 38–39 SHAP · 40–42 save
+artifact.
+
+Indices shifted by +2 above cell 27 when the calibration cells were added —
+`AUDIT.md` predates that and still uses the old numbering (its "cell 33" is
+now 35, its "cell 38" is now 40).
 
 ## Invariants — don't break these
 
@@ -83,7 +88,12 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   scores identically to `tenure=1000`. There is deliberately no range check.
   Unknown *categories* are the real hazard — hence the domain validation.
 - Profit-optimal threshold has a closed form: `cost / (success_rate × clv)`
-  = 0.333. The grid found 0.40; the +0.046 gap is model miscalibration.
+  = 0.333. The grid found 0.40. The gap is miscalibration, now measured in
+  cells 28–29: the mean offset across the 15 sweep rows is **+0.046**
+  (15/15 positive) and the calibration gap in the `[0.30, 0.50)` band where
+  the decision is made is **+0.051** — they agree to 0.004. The gap is *not*
+  uniform: only +0.022 averaged over all bins, roughly double that in the
+  band that matters. Brier 0.1342.
 - Env: uv, Python 3.12, pandas 3.0.5. Run tests with `uv run pytest -q`.
 
 ## Conventions
@@ -92,10 +102,10 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   nowhere. Don't assume Optuna is the tuner — it's `RandomizedSearchCV`.
 - Notebook cell 2 uses `warnings.simplefilter('once')`, not a blanket
   `ignore` — don't restore the catch-all (AUDIT.md M5). Lifting it exposed
-  ~1,457 deprecation warnings in cell 33, now fixed: that cell searches
+  ~1,457 deprecation warnings in the model-comparison cell, now fixed: it searches
   `l1_ratio: [1.0, 0.0]` instead of the `penalty` argument scikit-learn
   removes in 1.10. Same search space, but the code paths aren't
-  bit-identical — the LR row's ROC-AUC moved 0.843897 → 0.843891. Cell 33
+  bit-identical — the LR row's ROC-AUC moved 0.843897 → 0.843891. That cell
   now runs warning-free.
 - The profit formula is duplicated in 5 places in the notebook (AUDIT.md C11).
 - `tests/test_integration.py`'s fixture forces the first `N_ZERO_TENURE_ROWS`
