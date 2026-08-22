@@ -229,6 +229,7 @@ tests/
   test_telco_model.py         # smoke tests for the batch scoring script
   test_integration.py         # fits the real pipeline (no mocks) on synthetic data
   test_artifact.py            # loads the committed .pkl and pins its prediction
+  test_input_validation.py    # batch-input domain checks + API non-finite handling
 pyproject.toml                # dependencies (managed with uv)
 .github/workflows/tests.yml   # CI: runs the test suite on every push and PR
 

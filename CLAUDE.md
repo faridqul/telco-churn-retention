@@ -28,10 +28,11 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `feature_engineering_telco.py` | 6 derived features. Imported by the notebook, API, batch script, config, and 2 test files. **The single most load-bearing module.** |
 | `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. Missing/corrupt metadata is **fatal**; a bad value inside readable metadata **degrades**. |
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
-| `telco_model.py` | Batch scorer. CSV in, CSV out. **No input validation** (see AUDIT.md M1). |
+| `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `tests/` | 64 tests, ~3.9 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 6 files at collection. |
+| `tests/` | 103 tests, ~2.1 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 7 files at collection. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
+| `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
 
 ## Notebook cell map
@@ -49,6 +50,11 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   crashes at startup if not.
 - `api.py` and `telco_model.py` must make the **same** decision: same model,
   same threshold, same `>=` comparison. Divergence is silent.
+- Both must also **accept the same inputs**. `config.CATEGORICAL_DOMAINS` is
+  the batch path's copy of `api.Customer`'s `Literal` types;
+  `tests/test_input_validation.py` asserts they agree. The encoder uses
+  `handle_unknown='ignore'`, so an unvalidated bad category scores silently
+  (0.5700 → 0.1017 on `DUMMY_CUSTOMER`) rather than erroring.
 - The test set is touched once, after the threshold is locked. Threshold
   selection uses out-of-fold predictions (`cross_val_predict`), never a
   reused validation split.
@@ -73,6 +79,9 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   together on retrain, so the pin can't go stale.
 - Test metrics reproduce exactly from the committed `.pkl`: ROC-AUC 0.8441,
   P 0.5885, R 0.6882, F1 0.6344, acc 0.7900, TP/FP/FN/TN 256/179/116/854.
+- Extreme *numbers* are safe: the tree ensemble saturates, so `tenure=10**15`
+  scores identically to `tenure=1000`. There is deliberately no range check.
+  Unknown *categories* are the real hazard — hence the domain validation.
 - Profit-optimal threshold has a closed form: `cost / (success_rate × clv)`
   = 0.333. The grid found 0.40; the +0.046 gap is model miscalibration.
 - Env: uv, Python 3.12, pandas 3.0.5. Run tests with `uv run pytest -q`.

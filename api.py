@@ -1,8 +1,11 @@
+import math
 from typing import Literal
 
 import joblib
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from config import (
@@ -40,8 +43,13 @@ class Customer(BaseModel):
         "Electronic check", "Mailed check",
         "Bank transfer (automatic)", "Credit card (automatic)"
     ]
-    monthlycharges: float = Field(ge=0)
-    totalcharges: float | None = Field(default=None, ge=0)
+    # allow_inf_nan=False because ge=0 lets Infinity through -- inf >= 0 is
+    # True -- and it then reaches the scaler, which raises ValueError
+    # mid-request and returns a 500 instead of a 422. NaN is worse: the
+    # pipeline's SimpleImputer silently replaces it with the training
+    # median, so a garbage input comes back as a confident prediction.
+    monthlycharges: float = Field(ge=0, allow_inf_nan=False)
+    totalcharges: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
 class PredictionResponse(BaseModel):
@@ -70,6 +78,36 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Telco Churn Prediction API", lifespan=lifespan)
+
+
+def _json_safe(value):
+    """Replace non-finite floats with a string so a payload can be
+    serialized. Recurses through the dicts and lists FastAPI builds its
+    validation errors from.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)  # 'inf', '-inf', 'nan'
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
+
+
+@app.exception_handler(RequestValidationError)
+async def non_finite_safe_validation_handler(request: Request, exc: RequestValidationError):
+    """Return FastAPI's normal 422 body, with non-finite inputs stringified.
+
+    allow_inf_nan=False on the Customer model correctly rejects a body
+    containing Infinity or NaN, but FastAPI's default error response echoes
+    the offending value back under "input" -- and json.dumps refuses to
+    serialize inf, so building the 422 raised ValueError and the client got
+    a 500 instead. Python's json module *accepts* Infinity on the way in
+    while refusing to emit it on the way out, which is what makes this
+    reachable at all. Only the reporting is changed here; the rejection
+    itself is Pydantic's.
+    """
+    return JSONResponse(status_code=422, content={"detail": _json_safe(exc.errors())})
 
 
 @app.get("/health")

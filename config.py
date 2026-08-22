@@ -84,6 +84,162 @@ def _load_metadata(metadata_path: str = METADATA_PATH) -> dict:
         ) from e
 
 
+# Allowed values for every categorical column, and the numeric columns that
+# must parse as finite numbers. These mirror the Literal types on
+# api.Customer exactly -- tests/test_input_validation.py asserts the two
+# agree, so they cannot drift apart silently. They live here rather than in
+# api.py because telco_model.py needs them too, and this module exists
+# specifically to stop the two consumers diverging.
+#
+# Why this matters more than a range check on the numbers: the pipeline's
+# OneHotEncoder uses handle_unknown='ignore', so an unrecognised category
+# becomes an all-zeros block that is indistinguishable from "no
+# information" -- no error, just a different answer. A casing slip in a CSV
+# ('month-to-month' for 'Month-to-month') moves DUMMY_CUSTOMER from 0.5700
+# to 0.1017, flipping the retention decision silently. Out-of-range
+# *numbers*, by contrast, saturate harmlessly in a tree ensemble: tenure
+# 10**15 scores the same as tenure 1000.
+CATEGORICAL_DOMAINS: dict[str, tuple[str, ...]] = {
+    "gender": ("Male", "Female"),
+    "partner": ("Yes", "No"),
+    "dependents": ("Yes", "No"),
+    "phoneservice": ("Yes", "No"),
+    "multiplelines": ("Yes", "No", "No phone service"),
+    "internetservice": ("DSL", "Fiber optic", "No"),
+    "onlinesecurity": ("Yes", "No", "No internet service"),
+    "onlinebackup": ("Yes", "No", "No internet service"),
+    "deviceprotection": ("Yes", "No", "No internet service"),
+    "techsupport": ("Yes", "No", "No internet service"),
+    "streamingtv": ("Yes", "No", "No internet service"),
+    "streamingmovies": ("Yes", "No", "No internet service"),
+    "contract": ("Month-to-month", "One year", "Two year"),
+    "paperlessbilling": ("Yes", "No"),
+    "paymentmethod": (
+        "Electronic check", "Mailed check",
+        "Bank transfer (automatic)", "Credit card (automatic)",
+    ),
+}
+
+# seniorcitizen is 0/1, tenure is a count of months, the two charge columns
+# are money. All must be non-negative, matching api.Customer's ge=0 fields.
+NUMERIC_COLUMNS: tuple[str, ...] = (
+    "seniorcitizen", "tenure", "monthlycharges", "totalcharges",
+)
+
+# totalcharges is blank for the 11 real customers with tenure==0, and the
+# pipeline's SimpleImputer is there to fill exactly that. So a *missing*
+# numeric is allowed; an unparseable or infinite one is not.
+NULLABLE_NUMERIC_COLUMNS: tuple[str, ...] = ("totalcharges",)
+
+# How many offending rows to name per problem before summarising the rest --
+# a 50,000-row CSV with a systematically wrong column shouldn't print 50,000
+# line numbers.
+_MAX_REPORTED_ROWS = 5
+
+
+def _describe_rows(positions) -> str:
+    """Human-readable row list, 1-based and counting the CSV header, so the
+    numbers match what a text editor shows."""
+    lines = [p + 2 for p in positions[:_MAX_REPORTED_ROWS]]
+    rendered = ", ".join(str(n) for n in lines)
+    if len(positions) > _MAX_REPORTED_ROWS:
+        rendered += f", ... ({len(positions)} rows total)"
+    return rendered
+
+
+def validate_input_frame(df: pd.DataFrame) -> None:
+    """Reject a batch input frame that the model cannot score honestly.
+
+    api.py gets this for free from Pydantic -- unknown categories and
+    negative numbers are rejected with a 422 before anything is scored.
+    telco_model.py had no equivalent, so a CSV from a slightly different
+    export could be scored end to end with no error and a silently
+    different answer. This closes that gap using the same domains.
+
+    Deliberately checks membership and finiteness, NOT plausible ranges.
+    An implausibly large tenure still produces a sensible, saturated
+    prediction; an unrecognised contract value does not, and gives no sign
+    that anything went wrong. Adding upper bounds would reject inputs the
+    model handles correctly while doing nothing about the case that
+    actually loses money.
+
+    Raises RuntimeError naming every problem found, rather than the first
+    one, so a malformed file can be fixed in one pass.
+    """
+    problems: list[str] = []
+
+    required = tuple(CATEGORICAL_DOMAINS) + NUMERIC_COLUMNS
+    missing_cols = [c for c in required if c not in df.columns]
+    if missing_cols:
+        raise RuntimeError(
+            f"Input is missing {len(missing_cols)} required column(s): "
+            f"{sorted(missing_cols)}.\nExpected all of: {sorted(required)}"
+        )
+
+    for column, allowed in CATEGORICAL_DOMAINS.items():
+        offending = df.index[~df[column].isin(allowed)]
+        if len(offending):
+            positions = [df.index.get_loc(i) for i in offending]
+            seen = sorted({repr(v) for v in df.loc[offending, column].unique()})
+            problems.append(
+                f"  {column}: {len(offending)} row(s) with a value outside "
+                f"the trained categories.\n"
+                f"      found:   {', '.join(seen[:_MAX_REPORTED_ROWS])}\n"
+                f"      allowed: {', '.join(repr(v) for v in allowed)}\n"
+                f"      rows:    {_describe_rows(positions)}"
+            )
+
+    for column in NUMERIC_COLUMNS:
+        values = pd.to_numeric(df[column], errors="coerce")
+        blank = df[column].isna() | (
+            df[column].astype(str).str.strip() == "" if df[column].dtype == object
+            else False
+        )
+        unparseable = values.isna() & ~blank
+        if unparseable.any():
+            positions = [df.index.get_loc(i) for i in df.index[unparseable]]
+            problems.append(
+                f"  {column}: {int(unparseable.sum())} row(s) that are not a "
+                f"number.\n      rows:    {_describe_rows(positions)}"
+            )
+
+        if column not in NULLABLE_NUMERIC_COLUMNS and blank.any():
+            positions = [df.index.get_loc(i) for i in df.index[blank]]
+            problems.append(
+                f"  {column}: {int(blank.sum())} row(s) are empty. Only "
+                f"{', '.join(NULLABLE_NUMERIC_COLUMNS)} may be blank "
+                f"(tenure==0 customers).\n"
+                f"      rows:    {_describe_rows(positions)}"
+            )
+
+        nonfinite = np.isinf(values.to_numpy(dtype="float64", na_value=0.0))
+        if nonfinite.any():
+            positions = list(np.flatnonzero(nonfinite))
+            problems.append(
+                f"  {column}: {len(positions)} row(s) are infinite. The "
+                f"scaler cannot transform these and scikit-learn raises "
+                f"mid-scoring.\n      rows:    {_describe_rows(positions)}"
+            )
+
+        negative = (values < 0).fillna(False).to_numpy()
+        if negative.any():
+            positions = list(np.flatnonzero(negative))
+            problems.append(
+                f"  {column}: {len(positions)} row(s) are negative. The API "
+                f"rejects these (ge=0) and the batch path must agree.\n"
+                f"      rows:    {_describe_rows(positions)}"
+            )
+
+    if problems:
+        raise RuntimeError(
+            "Input validation failed -- refusing to score. The pipeline's "
+            "OneHotEncoder ignores unknown categories rather than erroring, "
+            "so scoring this file would produce plausible-looking but wrong "
+            "predictions instead of a failure.\n\n"
+            + "\n".join(problems)
+        )
+
+
 def load_threshold(metadata_path: str = METADATA_PATH) -> float:
     """Operating threshold from the metadata, or DEFAULT_THRESHOLD if the
     file is readable but its "threshold" value isn't usable.

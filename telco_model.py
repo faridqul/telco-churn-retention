@@ -6,6 +6,7 @@ from config import (
     load_threshold,
     validate_environment_versions,
     validate_feature_schema,
+    validate_input_frame,
 )
 from feature_engineering_telco import engineer_features
 
@@ -24,6 +25,14 @@ def main():
 
     print("Loading new customer data...")
     new_customers = pd.read_csv(INPUT_PATH)
+
+    # api.py gets this from Pydantic; without it here a CSV with an unknown
+    # category scores end to end with no error and a silently different
+    # answer, because the OneHotEncoder ignores unknown values rather than
+    # raising. Runs before feature engineering so the row numbers reported
+    # still line up with the input file.
+    print("Validating input...")
+    validate_input_frame(new_customers)
 
     print("Engineering features...")
     new_customers = engineer_features(new_customers)

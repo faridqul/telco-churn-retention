@@ -686,3 +686,170 @@ timing were taken from a real `uv run pytest -q` run (64 passed, 3.90 s), not
 estimated. No tests were run *for* this change specifically, as it is
 documentation and touches no code. **Not committed** — `CLAUDE.md` shows as
 modified.
+
+---
+
+## 2026-08-22 — Input validation on the batch path; reject non-finite numbers in the API
+
+**Files touched:**
+- `config.py`
+- `telco_model.py`
+- `api.py`
+- `tests/test_input_validation.py` (created)
+- `README.md`
+- `AUDIT.md`
+
+**What changed:** You asked whether extreme-value checks were worth adding
+to some or all columns. The measurements said no to that specific idea and
+yes to two narrower ones, and those two were implemented.
+
+**Why extreme-value range checks were not added.** The model is a tree
+ensemble, so out-of-range numbers do not extrapolate — they land in the
+terminal leaf and the prediction saturates. Measured against the shipped
+pickle: `tenure` of 1,000 and `tenure` of 10^15 both score 0.1201;
+`monthlycharges` of 500 and of 10^300 both score 0.6665; `totalcharges` of
+10^6 and 10^300 both score 0.5282. An absurd tenure returns the *directionally
+correct* answer, that a very long-tenured customer is unlikely to churn. A
+range check would therefore reject inputs the model already handles, and
+would need an upper bound nobody can justify from the data. This reasoning
+is recorded in `CLAUDE.md` and in the new test file's docstring so the
+question does not get reopened from scratch.
+
+**What was added instead, first: categorical domain validation on the batch
+path.** The pipeline's OneHotEncoder is configured with
+`handle_unknown='ignore'`, which means an unrecognised category is encoded
+as an all-zeros block — indistinguishable from "no information". No error is
+raised. Measured on the shipped model: a customer scoring 0.5700 with
+`contract='Month-to-month'` scores 0.1017 with `contract='month-to-month'`,
+and the same 0.1017 for `'Two Year'`, `'Monthly'` or an empty string. That is
+a flipped retention decision caused by a casing difference, which is exactly
+what a CSV exported from a slightly different system looks like. `api.py` was
+already immune because its Pydantic `Literal` types reject these with a 422;
+`telco_model.py` had no validation whatsoever.
+
+`config.py` gained `CATEGORICAL_DOMAINS` (the allowed values for all fifteen
+categorical columns), `NUMERIC_COLUMNS`, `NULLABLE_NUMERIC_COLUMNS`, and
+`validate_input_frame()`. The domains live in `config.py` rather than
+`api.py` because both consumers need them and that module exists precisely to
+stop the two drifting apart. `telco_model.py` now calls the validator
+immediately after `pd.read_csv` and before feature engineering, so reported
+row numbers still line up with the input file.
+
+The validator checks membership and finiteness, not plausibility. It reports
+every problem it finds in a single raised `RuntimeError` rather than the
+first one, so a malformed file can be fixed in one pass, and it names
+offending rows using 1-based numbers that count the CSV header, so they match
+what a text editor shows. It caps the row list at five per problem so a
+50,000-row file with a systematically broken column does not print 50,000
+line numbers. Blank `totalcharges` is explicitly still allowed, because the
+eleven real customers with `tenure==0` have exactly that and the pipeline's
+SimpleImputer exists to fill it — rejecting it would reject legitimate data.
+
+**Second: non-finite numbers through the API.** A JSON body containing
+`Infinity` passed Pydantic's `ge=0` check, because `inf >= 0` is `True`, and
+reached the scaler, which raised `ValueError` mid-request and returned a 500.
+`allow_inf_nan=False` was added to the two float fields — but that alone did
+not fix it. Pydantic then rejected the value correctly, and FastAPI's default
+422 response body echoes the offending input back under `"input"`, so
+`json.dumps` refused to serialize `inf` and the client still got a 500. The
+underlying quirk is that Python's `json` module accepts `Infinity` and `NaN`
+on the way in while refusing to emit them on the way out. A
+`RequestValidationError` handler was added that returns the normal 422 body
+with non-finite values stringified. The rejection itself is still Pydantic's;
+only the reporting changed.
+
+`tests/test_input_validation.py` adds 39 tests. The unknown-category test is
+parametrized over `CATEGORICAL_DOMAINS` itself, so a column added to that map
+is covered automatically rather than needing a remembered test. One test
+asserts that `api.Customer`'s `Literal` types and `config.CATEGORICAL_DOMAINS`
+contain the same values, which is what stops the two consumers drifting into
+accepting different inputs. Others cover negative and unparseable numerics,
+infinities, missing columns, the exact row numbers in the message, all
+problems appearing in one pass, blank `totalcharges` still passing, and the
+real `simulated_new_customers.csv` still validating.
+
+`README.md` lists the new test file. `AUDIT.md` had M1 ticked.
+
+**Why:** M1 was the highest-ranked moderate finding in the audit — the batch
+scorer would accept any CSV and silently produce different answers. Your
+question about extreme values was the prompt, and investigating it showed the
+real exposure was categorical rather than numeric.
+
+**Requested or incidental:** Requested — you said "yes do it" to the two
+changes I recommended. Flagged as beyond that: the `README.md`, `AUDIT.md`
+and `CLAUDE.md` updates were taken on initiative, and the
+`RequestValidationError` handler was not in the original recommendation
+either — it became necessary only when `allow_inf_nan=False` turned out not
+to be sufficient on its own. The `CLAUDE.md` edit is logged separately below.
+
+**Verification status:** Measured before, verified after. The saturation
+figures and the 0.5700 → 0.1017 swing were obtained by running the shipped
+pickle, not estimated. The API's inf behaviour was checked twice: an initial
+test appeared to show a failure that was actually the test client refusing to
+serialize the request, so it was re-run with a raw JSON body to confirm the
+defect was real and server-side before anything was changed.
+
+After the change: `Infinity`, `-Infinity` and `NaN` all return 422 with
+"Input should be a finite number", a valid customer still returns 200 with
+`churn_probability` 0.57, and `telco_model.py` still scores the real sample
+file and flags the same 15 of 50 customers as before. A deliberately
+corrupted copy of that file — two bad `contract` values, a `paymentmethod` of
+"PayPal", a negative charge, an infinite tenure and an unparseable charge —
+was rejected with all five problems listed and correct file line numbers. The
+full suite passes: **103 tests in 2.07 s**, up from 64.
+
+One finding was *not* fixed and should not be assumed covered: AUDIT M9, the
+unhelpful `AttributeError` from the `.str` accessor in `is_auto_pay` when
+`paymentmethod` is an all-empty column, is now caught earlier *in the batch
+path* with a readable message — verified — but `engineer_features()` itself
+is unchanged, so calling it directly still raises the original unhelpful
+error. M9 remains open in `AUDIT.md`. **Not committed at the time of
+writing;** committed immediately afterwards as the second of two commits.
+
+---
+
+## 2026-08-22 — Record the input-validation contract in CLAUDE.md
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** Five edits, all consequences of the input-validation work
+described above.
+
+A new invariant was added stating that the two consumers must accept the same
+inputs, not merely produce the same decision: `config.CATEGORICAL_DOMAINS` is
+the batch path's copy of `api.Customer`'s `Literal` types, a test asserts they
+agree, and the reason it matters is that `handle_unknown='ignore'` makes an
+unvalidated bad category score silently rather than error, with the
+0.5700 → 0.1017 swing given as the concrete example.
+
+A new fact was added recording that extreme *numbers* are safe because the
+tree ensemble saturates — `tenure=10**15` scores identically to
+`tenure=1000` — and that there is deliberately no range check, with unknown
+categories named as the real hazard. The `telco_model.py` row, which
+previously read "**No input validation** (see AUDIT.md M1)", now says it
+validates through `config.validate_input_frame()` and marks M1 fixed. A row
+was added for `tests/test_input_validation.py`. The `tests/` row went from
+"64 tests, ~3.9 s ... 6 files" to "103 tests, ~2.1 s ... 7 files".
+
+**Why:** The absence of a range check is a decision, not an oversight, and
+nothing in the code records a decision not taken — a future session would
+reasonably see unbounded numeric inputs as a gap and "fix" it. Writing the
+saturation measurement into the file is what prevents that. The
+`telco_model.py` row was actively wrong once the validator landed, and
+`CLAUDE.md` is loaded automatically at the start of every session, so a wrong
+statement there is more costly than almost anywhere else.
+
+**Requested or incidental:** **Incidental.** You asked for the validation to
+be implemented; none of these documentation edits were requested. This entry
+is separate because `CLAUDE.md` requires any edit to itself to be logged in
+its own entry, without exception.
+
+**Verification status:** Each edit was applied by an anchored string
+substitution asserting its target exists first, so a silent no-op was
+impossible, and the results were read back. The test count and timing come
+from a real `uv run pytest -q` run (103 passed, 2.07 s). The saturation
+figures quoted in the new fact were measured against the shipped pickle
+earlier in the session. No tests were run for this change specifically — it
+is documentation and touches no code. Committed together with the code it
+describes.
