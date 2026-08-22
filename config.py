@@ -23,8 +23,9 @@ from feature_engineering_telco import engineer_features
 MODEL_PATH = os.environ.get("MODEL_PATH", "xgboost_churn_pipeline.pkl")
 METADATA_PATH = os.environ.get("METADATA_PATH", "model_metadata.json")
 
-# Fallback only used if model_metadata.json is missing -- keeps callers from
-# crashing, but should basically never be hit in normal operation.
+# Fallback used when model_metadata.json is readable but its "threshold"
+# value is unusable (absent, null, a list, an uncastable string). A missing
+# or unparseable metadata FILE is fatal instead -- see _load_metadata.
 DEFAULT_THRESHOLD = 0.4
 
 # Minimal, arbitrary-but-valid customer used only to probe
@@ -40,14 +41,66 @@ DUMMY_CUSTOMER = {
 }
 
 
-def load_threshold(metadata_path: str = METADATA_PATH) -> float:
+def _load_metadata(metadata_path: str = METADATA_PATH) -> dict:
+    """Read and parse model_metadata.json, or fail with a readable message.
+
+    Missing-metadata policy, decided deliberately and applied consistently
+    by all three functions below: **a missing or unparseable metadata file
+    is fatal.** The metadata records the operating threshold, the feature
+    schema and the library versions the pickle was built with -- without it
+    there is no way to know whether the artifact next to it is the one the
+    code expects, so serving predictions anyway would mean guessing. Both
+    consumers call validate_feature_schema() first, so this is what they
+    hit, and it's a RuntimeError naming the file rather than a bare
+    FileNotFoundError traceback from inside a library call.
+
+    A *malformed value inside a readable file* is treated differently --
+    load_threshold() degrades to DEFAULT_THRESHOLD there, because the model
+    itself is probably fine and a sane default beats an outage.
+
+    Previously load_threshold() caught FileNotFoundError and returned
+    DEFAULT_THRESHOLD, but that branch was unreachable in production: both
+    consumers run the validators first, and those opened the same file and
+    raised. The fallback looked like graceful degradation while delivering
+    a raw traceback. This makes the fatal case explicit and readable
+    instead of half-implementing tolerance that never applied.
+    """
     try:
         with open(metadata_path) as f:
-            metadata = json.load(f)
+            return json.load(f)
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"Model metadata not found at {metadata_path}. The API and batch "
+            f"script both require it -- it records the operating threshold, "
+            f"the feature schema and the library versions the pickled model "
+            f"was built with. Run the notebook's save cell to regenerate it, "
+            f"or point METADATA_PATH at the right file."
+        ) from e
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"Model metadata at {metadata_path} is not valid JSON ({e}). "
+            f"It was likely truncated or hand-edited; regenerate it by "
+            f"running the notebook's save cell."
+        ) from e
+
+
+def load_threshold(metadata_path: str = METADATA_PATH) -> float:
+    """Operating threshold from the metadata, or DEFAULT_THRESHOLD if the
+    file is readable but its "threshold" value isn't usable.
+
+    A missing or unparseable file raises (see _load_metadata). TypeError is
+    caught alongside KeyError/ValueError because float(None) and
+    float([0.4]) both raise it -- null is what a hand-edit or a templating
+    step emits for a missing value, so it's a likelier corruption than the
+    uncastable-string case, and it used to crash startup.
+    """
+    metadata = _load_metadata(metadata_path)
+    try:
         return float(metadata["threshold"])
-    except (FileNotFoundError, KeyError, ValueError) as e:
-        print(f"WARNING: could not load threshold from {metadata_path} ({e}); "
-              f"falling back to DEFAULT_THRESHOLD={DEFAULT_THRESHOLD}")
+    except (KeyError, TypeError, ValueError) as e:
+        print(f"WARNING: could not read a usable threshold from "
+              f"{metadata_path} ({e}); falling back to "
+              f"DEFAULT_THRESHOLD={DEFAULT_THRESHOLD}")
         return DEFAULT_THRESHOLD
 
 
@@ -90,15 +143,32 @@ def validate_environment_versions(metadata_path: str = METADATA_PATH) -> None:
 
     No-ops (with a warning, not an error) if model_metadata.json predates
     this check and has no 'library_versions' key.
+
+    "Never raises" is enforced rather than merely asserted: an unreadable
+    metadata file, or a 'library_versions' that isn't a dict, warns and
+    returns. This function is a detection control only, and the fatal
+    missing-metadata case is already handled by validate_feature_schema(),
+    which both consumers call first. It previously raised AttributeError on
+    a 'library_versions' that was a list or a string, and FileNotFoundError
+    on a missing file, contradicting this docstring.
     """
-    with open(metadata_path) as f:
-        metadata = json.load(f)
+    try:
+        metadata = _load_metadata(metadata_path)
+    except RuntimeError as e:
+        print(f"WARNING: skipping environment validation -- {e}")
+        return
 
     trained_versions = metadata.get("library_versions")
     if not trained_versions:
         print(f"WARNING: {metadata_path} has no 'library_versions' field "
               f"(artifact trained before this check existed) -- skipping "
               f"environment validation.")
+        return
+
+    if not isinstance(trained_versions, dict):
+        print(f"WARNING: 'library_versions' in {metadata_path} is a "
+              f"{type(trained_versions).__name__}, expected an object mapping "
+              f"library name to version -- skipping environment validation.")
         return
 
     current_versions = _current_library_versions()
@@ -132,9 +202,15 @@ def validate_feature_schema(metadata_path: str = METADATA_PATH) -> None:
     wrong prediction -- at request time instead of failing loudly at
     startup.
     """
-    with open(metadata_path) as f:
-        metadata = json.load(f)
-    expected = set(metadata["feature_columns"])
+    metadata = _load_metadata(metadata_path)
+    feature_columns = metadata.get("feature_columns")
+    if not feature_columns:
+        raise RuntimeError(
+            f"{metadata_path} has no 'feature_columns' field, so there is "
+            f"nothing to validate engineer_features() against. Regenerate "
+            f"it by running the notebook's save cell."
+        )
+    expected = set(feature_columns)
 
     dummy_row = pd.DataFrame([DUMMY_CUSTOMER])
     actual = set(engineer_features(dummy_row).columns)

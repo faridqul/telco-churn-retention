@@ -26,11 +26,12 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 |---|---|
 | `telco_customer_churn.ipynb` | 41 cells. Training only. Produces the artifact. |
 | `feature_engineering_telco.py` | 6 derived features. Imported by the notebook, API, batch script, config, and 2 test files. **The single most load-bearing module.** |
-| `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. |
+| `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. Missing/corrupt metadata is **fatal**; a bad value inside readable metadata **degrades**. |
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. **No input validation** (see AUDIT.md M1). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `tests/` | 48 tests, ~1.7 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 5 files at collection. |
+| `tests/` | 64 tests, ~3.9 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 6 files at collection. |
+| `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
 
 ## Notebook cell map
@@ -53,6 +54,12 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   reused validation split.
 - Retraining rewrites `model_metadata.json` — including `library_versions`,
   which `config.validate_environment_versions()` checks at every startup.
+- Missing-metadata policy, applied by all three `config.py` entry points:
+  a missing or unparseable metadata **file** raises `RuntimeError` with a
+  readable message; a malformed **value** in a readable file degrades
+  (`load_threshold` → `DEFAULT_THRESHOLD`). `validate_environment_versions()`
+  never raises at all — it's a detection control, and
+  `validate_feature_schema()` runs first in both consumers.
 
 ## Facts worth not re-deriving
 
@@ -61,7 +68,9 @@ comparison · 36–37 SHAP · 38–40 save artifact.
   `~/.cache/kagglehub/datasets/blastchar/telco-customer-churn/versions/1/`
   — lets you reconstruct any split without re-downloading.
 - Shipped model scores `config.DUMMY_CUSTOMER` at **0.5699995160102844**.
-  Good canary that the artifact still loads and behaves.
+  Recorded as `dummy_customer_score` in `model_metadata.json` and asserted
+  by `tests/test_artifact.py`; the notebook's save cell rewrites both
+  together on retrain, so the pin can't go stale.
 - Test metrics reproduce exactly from the committed `.pkl`: ROC-AUC 0.8441,
   P 0.5885, R 0.6882, F1 0.6344, acc 0.7900, TP/FP/FN/TN 256/179/116/854.
 - Profit-optimal threshold has a closed form: `cost / (success_rate × clv)`
@@ -75,3 +84,39 @@ comparison · 36–37 SHAP · 38–40 save artifact.
 - The profit formula is duplicated in 5 places in the notebook (AUDIT.md C11).
 - CI lives in `.github/workflows/tests.yml` — runs `uv run pytest -q` on
   every push and PR.
+
+## CHANGELOG.md — mandatory, every session
+
+`CHANGELOG.md` in the repo root is an append-only record of every file
+change an assistant makes. Maintain it without being asked, in every
+future session. It is not a git-log substitute — it exists to be read
+months later by someone who has neither the diff nor the conversation.
+
+**Before ending any turn in which you changed a file**, append an entry.
+This applies whether the change was directly requested or made on your
+own initiative as a side effect of something else — an unrequested test,
+an adjacent fix, a doc touch-up. No exceptions for small changes.
+
+**Never edit or delete a past entry.** This file only ever grows. A
+mistake in an old entry is corrected by a new entry that says so.
+
+Each entry states:
+
+- **Date and a short title** for the change.
+- **Every file touched, listed explicitly.** Name them. Never
+  "updated a few files" or "and related tests".
+- **What changed**, in plain prose — the way you'd explain it out loud
+  to someone who isn't looking at the diff. Not a one-line commit summary.
+- **Why** — the problem it solves, or what was asked for.
+- **Requested or incidental** — say which, explicitly. Incidental changes
+  get their own clearly flagged statement, never folded quietly into the
+  same paragraph as requested work.
+- **Verification status** — what you actually ran vs. only reasoned about,
+  whether tests passed, and whether the change is committed yet.
+
+**One turn touching several unrelated things gets several entries**, not
+one combined entry.
+
+**Editing this file (`CLAUDE.md`) always requires its own CHANGELOG.md
+entry — no exceptions.** Silent edits to this file are what caused
+confusion before; it is the single most important file to log.

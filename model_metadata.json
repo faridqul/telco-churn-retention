@@ -39,5 +39,6 @@
     "contractvstenure",
     "average_monthly_charges",
     "charge_change_ratio"
-  ]
+  ],
+  "dummy_customer_score": 0.5699995160102844
 }
