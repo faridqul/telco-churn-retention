@@ -1255,3 +1255,40 @@ substitution asserting its target exists first, and read back. Every figure
 quoted in it — the 1,457 warning count, the 1.8/1.10 versions — comes from
 the run described in the entry above, not from memory. No tests were run for
 this change specifically; it is documentation and touches no code.
+
+---
+
+## 2026-08-22 — Trim the cell 2 warning comment
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (cell 2)
+
+**What changed:** The explanatory comment added to cell 2 in the previous
+change was cut from 32 lines to 14. It had listed all five categories of
+warning the old blanket `filterwarnings('ignore')` was hiding, each with its
+own paragraph, which was more than the point needed.
+
+What remains is the part a reader acts on: that the line used to be a bare
+`filterwarnings('ignore')`, that lifting it revealed roughly 1,457 warnings
+from the model-comparison cell, that `LogisticRegression`'s `penalty`
+argument is removed in scikit-learn 1.10 and will break that cell on upgrade,
+that the `ConvergenceWarning` question was checked and came back clean, and
+the instruction to suppress a specific category rather than restoring the
+catch-all. The `RuntimeWarning`, `InconsistentVersionWarning` and
+`UserWarning` details were dropped — they are recorded in `AUDIT.md` M5 and in
+the CHANGELOG entry for the original change, so nothing is lost.
+
+**Why:** You asked for it to be trimmed. A comment several times longer than
+the code it explains is one a reader skims past, which defeats its purpose —
+particularly the sklearn 1.10 deadline, which is the one line that needs to
+be noticed.
+
+**Requested or incidental:** Requested. No other change was made — the
+executable code is untouched.
+
+**Verification status:** Confirmed the only executable warning-related lines
+in the cell are still `import warnings` and `warnings.simplefilter('once')`,
+extracted the cell and ran it standalone to confirm it still executes clean,
+and checked the notebook JSON round-tripped without disturbing anything else
+(11 insertions, 29 deletions, no image blobs touched). Test suite unaffected
+at 118 passing. Committed.
