@@ -1470,3 +1470,77 @@ outputs (`execution_count: None`, empty `outputs`), and the file now holds 43
 cells. **The notebook was not re-executed end to end** — no retraining, so
 `xgboost_churn_pipeline.pkl` and `model_metadata.json` are untouched. Test
 suite unaffected at 118 passing. Committed.
+
+---
+
+## 2026-08-22 — Sync the README's Logistic Regression row to the re-executed notebook
+
+**Files touched:**
+- `README.md`
+- `CLAUDE.md`
+
+**What changed:** You re-executed the notebook end to end. Its actual outputs
+were compared against every figure the README publishes, and one row was
+wrong.
+
+**What reproduced exactly**, and therefore needed no change: the whole Results
+table — test ROC-AUC 0.8441, precision 0.59, recall 0.69, F1 0.63, accuracy
+0.79, confusion matrix 854/179/116/256, campaign profit $6,660, operating
+threshold 0.40 — plus the entire calibration section added earlier today
+(Brier 0.1342, all-bins gap +0.0222, `[0.30, 0.50)` gap +0.0505, mean sweep
+offset +0.0464 over 15/15 positive rows). The calibration figures had been
+written from a reconstruction; the real run printed them identically.
+
+More notably, `xgboost_churn_pipeline.pkl`, `simulated_new_customers.csv` and
+`dataset_baseline.json` are all **byte-identical** after the retrain, and
+`model_metadata.json` changed only in `trained_at` and `git_commit`. The
+threshold, CV scores, dataset hash, library versions, feature columns and
+pinned `dummy_customer_score` are unchanged. The `random_state=42` seeding
+throughout genuinely reproduces the artifact.
+
+**What was wrong.** The Logistic Regression comparison row had been written
+from a reconstruction of that cell rather than a real notebook run, and it
+was flagged as such in the README at the time. The real run differs:
+
+| Field | README said | Notebook printed |
+|---|---|---|
+| Mean ROC-AUC | 0.843891 | 0.843892 |
+| Std Dev | 0.018898 | 0.018902 |
+| Best Threshold | 0.58 | **0.62** |
+| Accuracy @ Threshold | 0.7758 | **0.7867** |
+| Profit @ Threshold | 26,200 | 26,200 |
+
+The ROC-AUC and Std differences are reconstruction noise in the sixth decimal.
+The threshold and accuracy differences are real and larger than expected. The
+cause is the same flatness noted when that cell was changed: the winning `C`
+is not stable run to run, and the profit-optimal threshold follows it. My own
+reconstructions had produced both 0.58 and 0.62 depending on `n_jobs`, which
+was the warning sign that the single number should not have been published
+from a reconstruction at all.
+
+Three places were corrected: the comparison table row, the inline
+"0.845812 / 0.843892 / 0.844126" sentence, and the threshold-split paragraph,
+which read "Random Forest's and Logistic Regression's (0.58, for both)" and is
+now "Random Forest's (0.58) and Logistic Regression's (0.62)". The note under
+the table was rewritten — it no longer says the figures come from a
+reconstruction, since they now come from the real run, and it states the
+threshold movement plainly along with why it looks larger than it is.
+
+`CLAUDE.md` gained a short procedure for what to re-check after any notebook
+re-execution, since this is the second time README figures have drifted from
+the notebook and there was nothing written down about it.
+
+**Why:** You re-executed the notebook and asked what needs changing when that
+happens. Answering it properly meant checking, not describing.
+
+**Requested or incidental:** Requested in substance — you asked the question,
+and the README corrections are the answer applied rather than merely
+explained. The `CLAUDE.md` procedure was added on initiative.
+
+**Verification status:** Every published figure was compared against output
+text extracted directly from the re-executed notebook's cells, not against
+memory or an earlier reconstruction. The byte-identity of the pickle and the
+two CSVs was confirmed with `git diff`, and the metadata diff was read in
+full. The artifact canary still scores 0.5699995160102844 and still matches
+the metadata pin, which is the check that would have caught a genuinely
+changed model. Test suite: 118 passing. Committed.

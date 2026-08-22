@@ -96,6 +96,32 @@ now 35, its "cell 38" is now 40).
   band that matters. Brier 0.1342.
 - Env: uv, Python 3.12, pandas 3.0.5. Run tests with `uv run pytest -q`.
 
+## After re-executing the notebook
+
+Re-running it end to end rewrites `xgboost_churn_pipeline.pkl`,
+`model_metadata.json` and `simulated_new_customers.csv`, and re-prints every
+number the README publishes. Check these, in order:
+
+1. **`git diff model_metadata.json`.** If only `trained_at` and `git_commit`
+   moved, the artifact reproduced and nothing downstream needs touching. If
+   `threshold`, `cv_roc_auc_*`, `dummy_customer_score` or `hash` moved, the
+   model genuinely changed — every README figure is now suspect.
+2. **`uv run pytest -q`.** `tests/test_artifact.py` re-pins itself against the
+   rewritten metadata, so it passing does *not* prove the model is unchanged —
+   step 1 is what proves that.
+3. **Compare the README against the notebook's real outputs**, not against a
+   reconstruction. Extract them with the cell-source snippet at the top of
+   this file, substituting `c.get('outputs')`. The figures the README
+   publishes live in cells 26 and 30–33 (Results table), 27 (sensitivity
+   sweep), 29 (calibration) and 35 (model comparison).
+4. **Watch the Logistic Regression row in cell 35 specifically.** Its ROC-AUC
+   surface is flat, so the winning `C` — and therefore its best threshold —
+   slides between near-tied draws from run to run. It has legitimately been
+   both 0.58 and 0.62. Never publish that row from anything but a real run.
+5. **Check the prose, not just the tables.** The threshold-split paragraph in
+   the README quotes per-model thresholds inline and has gone stale this way
+   before.
+
 ## Conventions
 
 - `optuna`, `lightgbm`, `pyarrow` are declared in `pyproject.toml` and used
