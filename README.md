@@ -249,13 +249,25 @@ what it is in the band that actually matters, so a single global "the model
 is X points optimistic" would understate the effect exactly where it counts.
 
 Two practical consequences. First, a raw score isn't a churn probability: a
-customer scored 0.45 by this model churns about 39% of the time, worth
-saying before anyone quotes a score to a stakeholder. Second, this is the
-honest justification for searching the threshold empirically instead of
-computing it — the closed form can't absorb miscalibration, so the grid is
-earning its keep. Calibrating (Platt or isotonic) would pull the empirical
-threshold toward 0.333 and would leave ROC-AUC unchanged, since it doesn't
-alter the ranking.
+customer scored 0.45 by this model churns about 38% of the time, worth
+saying before anyone quotes a score to a stakeholder. The notebook's final
+appendix prints a full translation table for this, and shows the two
+reliability curves side by side.
+
+Second, this is the honest justification for searching the threshold
+empirically instead of computing it — the closed form can't absorb
+miscalibration, so the grid is earning its keep.
+
+**The shipped model is deliberately left uncalibrated.** Fitting a Platt
+scaler does move the profit-optimal threshold onto the closed form (0.32
+against a predicted 0.333), which is a satisfying confirmation that the gap
+really was miscalibration. But Platt scaling is monotonic: it cannot reorder
+customers, so it cannot pick a better set to target. Measured on the same
+out-of-fold predictions, it changes the targeting decision for 0.2% of
+customers and moves campaign profit by $40 on $26,640. It buys a readable
+number, not a better campaign — so it lives in the appendix as a lookup
+table rather than in the artifact, and the deployed threshold stays 0.40 on
+raw scores.
 
 ## Interpretability
 

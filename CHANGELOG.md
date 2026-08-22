@@ -1544,3 +1544,79 @@ two CSVs was confirmed with `git diff`, and the metadata diff was read in
 full. The artifact canary still scores 0.5699995160102844 and still matches
 the metadata pin, which is the check that would have caught a genuinely
 changed model. Test suite: 118 passing. Committed.
+
+---
+
+## 2026-08-22 — Appendix: show calibrated probabilities without changing the shipped model
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (a markdown cell and a code cell appended at the end, indices 43 and 44)
+- `README.md`
+- `CLAUDE.md`
+
+**What changed:** Two cells were added at the very end of the notebook,
+*after* the save cells, that fit a Platt scaler for display and never store
+it. They answer "what does a score of 0.45 actually mean?" without touching
+anything the project ships.
+
+The code cell plots the reliability curve twice side by side — as shipped,
+and after Platt scaling — and prints a translation table converting a raw
+score into an actual risk estimate. It then re-runs the profit search on the
+calibrated scores to show what calibrating would and would not buy.
+
+The measured answer: the profit-optimal threshold on calibrated scores is
+**0.32**, against a closed-form prediction of 0.333. Calibrating moves the
+empirical optimum onto the formula, which confirms the earlier diagnosis that
+the 0.40-versus-0.333 gap really was miscalibration rather than search noise.
+But it changes the targeting decision for only **0.2% of customers** and moves
+profit by **$40 on $26,640**. Platt scaling is monotonic, so it cannot reorder
+customers and therefore cannot pick a better set to target. It buys a readable
+number, not a better campaign.
+
+Methodology, since a calibration curve is easy to draw dishonestly: the Platt
+scaler is fitted on out-of-fold predictions, never in-sample, and the "after"
+reliability curve is built from a further 5-fold split of those, so the
+calibrated line is not self-graded. The translation table uses a scaler fitted
+on all the out-of-fold scores, which is appropriate for a display lookup.
+
+The cells were appended at the end rather than inserted, so no existing cell
+index moved — the diff is 93 insertions and zero deletions. `CLAUDE.md`'s cell
+map records the two new cells and carries an explicit warning that they save
+nothing, that their position after the save cells is deliberate, and that
+their calibrator should not be wired into the pipeline without reading the
+README's note on why the shipped model is uncalibrated.
+
+`README.md`'s calibration section gained a paragraph stating plainly that the
+model is *deliberately* left uncalibrated, with the measured justification.
+One existing figure was corrected while there: the section said a customer
+scored 0.45 "churns about 39% of the time", taken from an empirical bin; the
+Platt map in the new appendix prints 0.38 for the same score. Having the
+README and the notebook disagree by a point on the same claim was worth
+fixing, so the README now says 38% and points at the table.
+
+**Why:** You asked whether real probabilities could be shown without changing
+anything — just a plot and a markdown note at the end. That is exactly what
+this is, and it is the better trade here: the full calibration option would
+have rewritten the artifact, the metadata, the threshold, roughly five
+notebook cells, two test files and most of the README's numbers, in exchange
+for $40 of profit and a differently-labelled axis.
+
+**Requested or incidental:** Requested — this is the option you described.
+Flagged as beyond it: the profit/decision-overlap comparison and the
+side-by-side before/after curves go past "an additional plot", and the
+`README.md` and `CLAUDE.md` updates were taken on initiative, including the
+39% → 38% correction.
+
+**Verification status:** Written, then executed — not assumed. The cell was
+run against reconstructed out-of-fold predictions before being inserted, and
+then run again by reading its source straight out of the notebook, to confirm
+the version actually committed is the version that was tested. Every figure
+quoted above and in the README comes from that run. `git status` was checked
+immediately after appending to confirm only the notebook changed:
+`xgboost_churn_pipeline.pkl`, `model_metadata.json` and
+`simulated_new_customers.csv` are untouched, which is the whole premise of
+this change. Existing cell indices 26, 29, 35, 40 and 42 were re-checked by
+content and are unmoved. The new code cell carries no baked-in outputs
+(`execution_count: None`, empty `outputs`), so it will populate on your next
+notebook run. Test suite: 118 passing, unaffected — nothing this change
+touches is under test. Committed.

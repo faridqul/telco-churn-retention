@@ -37,12 +37,18 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 
 ## Notebook cell map
 
-43 cells. 0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature
+45 cells. 0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature
 engineering · 12 ColumnTransformer · 14–21 baselines/imbalance (marked
 removable) · 22–25 RandomizedSearchCV (200 iters) · **26 threshold selection
 via OOF — the heart** · 27 sensitivity sweep · 28–29 calibration curve ·
 30–33 test-set scoring · 35 model comparison · 38–39 SHAP · 40–42 save
-artifact.
+artifact · 43–44 appendix: display-only Platt scaling + score→risk table.
+
+**43–44 save nothing.** They fit a calibrator for display and are appended
+*after* the save cells on purpose, so the artifact, the metadata and the 0.40
+threshold are unaffected by them. Don't move them above cell 42, and don't
+wire their calibrator into the pipeline without reading the note in
+`README.md` about why the shipped model is deliberately uncalibrated.
 
 Indices shifted by +2 above cell 27 when the calibration cells were added —
 `AUDIT.md` predates that and still uses the old numbering (its "cell 33" is
