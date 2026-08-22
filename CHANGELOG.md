@@ -1138,3 +1138,120 @@ requires any edit to itself to have its own entry, without exception.
 that assert their target exists first; results read back. The test count comes
 from a real `uv run pytest -q` run (118 passed). No tests run for this change
 specifically — documentation only. Not committed.
+
+---
+
+## 2026-08-22 — Scope the notebook's warning suppression (M5)
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (cell 2)
+- `AUDIT.md`
+
+**What changed:** Cell 2 ended with `warnings.filterwarnings('ignore')`, a
+bare catch-all that silences every warning for the entire kernel session.
+Retraining is the one activity during which you most want to hear about
+problems, and that line hid all of them. It was replaced with
+`warnings.simplefilter('once')`, which shows each *distinct* warning exactly
+once — enough to keep the output readable inside a 200-iteration
+cross-validated search, without hiding anything.
+
+A comment block was added listing what the catch-all had been concealing, so
+nobody restores it for quietness without knowing the cost.
+
+**What re-running the model-comparison cell actually showed.** The audit
+flagged one specific risk as "the real bite": that cell 33's Logistic
+Regression number, and the README's conclusion that the dataset has an
+information ceiling around ROC-AUC 0.845, might rest on a model that never
+converged. That was checked by reconstructing the cell's search — the same
+200 iterations over 5 folds, the same `X_tr`/`y_tr` slice — with warnings
+captured instead of suppressed.
+
+The result is reassuring on that point: **zero ConvergenceWarnings**, and the
+search reproduced ROC-AUC 0.843896 against the README's 0.843897. The
+Logistic Regression number is sound, and the information-ceiling conclusion
+stands. It was sound by luck rather than by verification, though, since
+nothing in the notebook would have revealed the opposite.
+
+The same run surfaced something the audit did not anticipate: **1,457
+warnings from that one cell** — 1,001 `FutureWarning` and 456 `UserWarning`.
+They say that `LogisticRegression`'s `penalty` argument was deprecated in
+scikit-learn 1.8 and **will be removed in 1.10**. Cell 33 searches
+`penalty: ['l1', 'l2']`, so that cell stops working on a future scikit-learn
+upgrade, and the blanket ignore meant there would have been no advance notice
+whatsoever. The accompanying `UserWarning` reads "Inconsistent values:
+penalty=l1 with l1_ratio=0.0", which looked as though L1 might be silently
+ignored; that was checked directly and it is not — at small `C`, `penalty='l1'`
+still drives coefficients to exactly zero (36 of 40 at C=0.01) while `'l2'`
+drives none. So the current results are correct and the warning is noise
+today, but it announces the same removal.
+
+**This deprecation was NOT fixed**, deliberately. Changing cell 33's search
+space to the `l1_ratio` API would alter the Logistic Regression comparison
+numbers currently published in the README, which is a decision about what the
+project reports rather than a mechanical repair. It is recorded in `CLAUDE.md`
+so the next session finds it before a scikit-learn upgrade does.
+
+**Why:** You asked for worklist item 6 / finding M5 by name, and specifically
+for cell 33 to be re-run and checked for `ConvergenceWarning`.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+investigation of the `penalty` deprecation and the L1-still-works check were
+not asked for — they came out of running the cell — and the `AUDIT.md` and
+`CLAUDE.md` updates were taken on initiative. The `CLAUDE.md` edit is logged
+separately below.
+
+**Verification status:** Executed, at full scale rather than approximated.
+The full 200-iteration × 5-fold Logistic Regression search was reconstructed
+from the notebook's own cleaning, splitting and preprocessing code and run to
+completion (about eight minutes) with `warnings.simplefilter('always')` and
+`record=True`, which is what produced the 1,457 count, the zero
+ConvergenceWarnings, and the ROC-AUC that matches the README to six decimal
+places. The L1-sparsity check was a separate direct experiment on synthetic
+data, not an inference from the warning text.
+
+The edited cell 2 was extracted and executed standalone to confirm it still
+runs, that the only executable warning-related lines are now `import warnings`
+and `warnings.simplefilter('once')`, and that the filter genuinely lets a
+warning through — three repeated `FutureWarning`s emit exactly one copy. The
+notebook JSON round-tripped without reformatting (34 insertions, 1 deletion,
+no image blobs touched). The test suite is unaffected at 118 passing, and the
+artifact canary still matches its pin, confirming nothing about the shipped
+model changed. **The notebook itself was not re-executed end to end** — no
+retraining was performed, so `xgboost_churn_pipeline.pkl` and
+`model_metadata.json` are untouched.
+
+---
+
+## 2026-08-22 — Record the warning policy and the sklearn 1.10 deadline in CLAUDE.md
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** A convention was added stating that notebook cell 2 uses
+`warnings.simplefilter('once')` rather than a blanket `ignore` and that the
+catch-all should not be restored, citing AUDIT M5. It also records the
+concrete finding: re-running cell 33 now surfaces roughly 1,457 warnings,
+`LogisticRegression`'s `penalty` argument is deprecated in scikit-learn 1.8
+and removed in 1.10, so that cell's `penalty: ['l1','l2']` search will break
+on upgrade — and that this is deliberately not yet fixed because fixing it
+changes the published comparison numbers.
+
+**Why:** A blanket `filterwarnings('ignore')` is the kind of line that gets
+reinstated the moment output gets noisy, especially now that the notebook
+prints far more than it used to. Recording why it was removed is what makes
+that a considered decision rather than an accident. The scikit-learn 1.10
+deadline is more important still: it is a dated breakage in a file nobody
+runs often, and the only reason it is known at all is that the suppression
+was lifted. `CLAUDE.md` loads automatically at the start of every session, so
+it is where a future session will actually see it.
+
+**Requested or incidental:** **Incidental.** You asked for the suppression to
+be scoped and cell 33 re-run; you did not ask for documentation changes.
+Logged separately because `CLAUDE.md` requires any edit to itself to have its
+own entry, without exception.
+
+**Verification status:** The edit was applied by an anchored string
+substitution asserting its target exists first, and read back. Every figure
+quoted in it — the 1,457 warning count, the 1.8/1.10 versions — comes from
+the run described in the entry above, not from memory. No tests were run for
+this change specifically; it is documentation and touches no code.
