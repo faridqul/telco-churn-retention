@@ -853,3 +853,96 @@ figures quoted in the new fact were measured against the shipped pickle
 earlier in the session. No tests were run for this change specifically — it
 is documentation and touches no code. Committed together with the code it
 describes.
+
+---
+
+## 2026-08-22 — Bring README back in line with the code after an end-to-end audit
+
+**Files touched:**
+- `README.md`
+
+**What changed:** You asked whether the README still matched the project. It
+was audited claim by claim against the code rather than read for plausibility,
+and six things were found stale — five of them caused by this session's own
+work — and all six were fixed.
+
+**What was verified as still correct**, so it is not being changed: the entire
+Results table was recomputed from the committed pickle against a reconstructed
+train/test split, and every figure matched exactly — ROC-AUC 0.8441, precision
+0.59, recall 0.69, F1 0.63, accuracy 79%, confusion 256/179/116/854, profit
+$6,660 — as did the dataset counts (7,043 raw rows, 1,405 test rows, 22
+duplicates). The Approach, model-comparison and threshold-sensitivity sections
+are untouched by recent work and remain accurate.
+
+**The six fixes.** The Tests section claimed the suite covers
+`load_threshold`'s "fallback behavior (missing file, missing key, bad value)".
+Missing-file is no longer a fallback — it was made fatal earlier in this
+session — so the README was describing behaviour that had been deliberately
+reversed. That sentence now describes behaviour on malformed metadata, and a
+new paragraph states the split policy explicitly: a missing or unparseable
+file is fatal, a bad value inside a readable file degrades.
+
+The same section claimed the tests "run fast with no trained `.pkl` or
+`model_metadata.json` on disk". That stopped being true when
+`test_artifact.py` was added — confirmed by deleting both artifacts from a
+clone and watching four tests fail and four error. The text now says which
+three of the seven files are deliberately unmocked and what each needs. The
+neighbouring claim that a fresh clone can run the suite immediately was
+checked and *is* still true, since the artifacts are committed, so it was
+kept — a clean clone runs 103 tests green.
+
+The Tests section also predated two whole test files, so it gained a
+description of artifact pinning (what `dummy_customer_score` is and why a
+retrain cannot make the pin stale) and of batch-input validation.
+
+The batch-scoring section described only the feature-schema check. It now also
+covers input validation, including the reason it exists — the OneHotEncoder's
+`handle_unknown='ignore'` turns an unrecognized category into an all-zeros
+block, so a casing slip moves a score from 0.5700 to 0.1017 with no error —
+a real sample of the error output, and an explicit note that numeric *ranges*
+are deliberately not checked because tree ensembles saturate.
+
+The API section said nothing about rejection. It now states that unknown
+categories, negative charges and non-finite numbers return 422, and notes that
+the batch path checks against the same domains with a test asserting they
+agree.
+
+The repo-structure block described `model_metadata.json` as holding
+"threshold + CV scores + feature schema + dataset hash"; it also holds
+`library_versions` and `dummy_customer_score`, and now says so.
+
+**One pre-existing gap was also closed**, unrelated to this session's changes:
+the README had never explained the version-drift machinery at all, even though
+`verify_version_check.sh` appeared in its file listing. A paragraph now covers
+what `validate_environment_versions()` does and why it warns rather than
+blocking. The `pytest -v` invocation was also changed to `uv run pytest -q`,
+matching how the project is actually run — the bare form only works with the
+virtualenv already activated.
+
+**Why:** You asked directly whether the README was one-to-one with the project.
+A README that describes reversed behaviour is worse than one that is merely
+incomplete, because a reader has no way to tell which parts to trust — and the
+`load_threshold` sentence contradicted a policy decision made deliberately two
+commits earlier.
+
+**Requested or incidental:** Requested — you asked for the audit and then said
+to fix what it found. Flagged as beyond that: the version-drift paragraph and
+the `pytest -v` correction were not among the six findings; both were taken on
+initiative while editing the same section.
+
+**Verification status:** Audited and re-verified by execution, not by reading.
+Before the edit, the fresh-clone claim was tested by cloning the repo into a
+temporary directory twice — once intact (103 passed) and once with the
+artifacts deleted (4 failed, 4 errors) — which is what established that half
+the sentence was true and half was false. The Results table was recomputed
+from the pickle as described above.
+
+After the edit, every new claim was re-checked against the code: the suite
+count and timing (103 passed, ~2 s), that seven test files exist, that
+`dummy_customer_score` and `library_versions` are really in the metadata, that
+`test_integration.py` genuinely passes with the pickle deleted (5 passed), and
+that the sample validation error printed in the README is the real output —
+it was regenerated from a deliberately corrupted frame and matches
+character-for-character apart from the elisions marked `...`. The six original
+findings were re-grepped and confirmed gone. **Not committed at the time of
+writing.**
