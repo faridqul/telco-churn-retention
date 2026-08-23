@@ -130,7 +130,30 @@ converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843892 /
 read this as "the model choice didn't matter," I read it as evidence the
 dataset itself has an information ceiling around ROC-AUC ≈ 0.845 — churn here
 is partly driven by factors outside the data (competitor offers, individual
-service interactions), and no algorithm can learn around that. A simpler,
+service interactions), and no algorithm can learn around that.
+
+Three matching scores are only circumstantial evidence for that, though —
+models can reach the same accuracy while being wrong about entirely different
+customers, and if they were, pooling them would beat any of them alone. So I
+checked the errors rather than stopping at the scores (final appendix in the
+notebook). They are wrong about the *same* people:
+
+| | Value |
+|---|---|
+| Error correlation `corr(y − p)` between the three | 0.964 – 0.980 |
+| Errors shared by all three models | **65%** |
+| Pairwise error overlap (Jaccard) | 0.72 – 0.78 |
+| Best single model, OOF profit | $27,000 (Random Forest) |
+| Average of all three, OOF profit | $26,780 |
+
+Averaging them nudges OOF ROC-AUC from 0.8492 to 0.8505 — inside the ~0.019
+fold-to-fold std — and *loses* to Random Forest alone on profit. Three
+structurally different algorithms (boosted trees, bagged trees, a linear
+model) failing on the same 65% of customers is what an information ceiling
+looks like when you measure it instead of inferring it, and it's the reason
+there's no stacking or blending here: there is no independent signal to pool.
+
+A simpler,
 more interpretable Logistic Regression would be a defensible choice over
 XGBoost for this specific dataset. Note the comparison still isn't perfectly
 apples-to-apples: XGBoost searches its own `scale_pos_weight`, while Logistic

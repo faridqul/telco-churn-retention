@@ -1620,3 +1620,92 @@ content and are unmoved. The new code cell carries no baked-in outputs
 (`execution_count: None`, empty `outputs`), so it will populate on your next
 notebook run. Test suite: 118 passing, unaffected — nothing this change
 touches is under test. Committed.
+
+---
+
+## 2026-08-22 — Appendix: check whether the three models make the same mistakes
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (cell 35 modified; markdown + code cells appended at 45 and 46)
+- `README.md`
+- `CLAUDE.md`
+
+**What changed:** You raised the point that if the three compared models make
+mistakes on different customers, they are catching different signals — and
+that this was worth checking. It was, so it is now checked and shown in the
+notebook rather than left as a private conclusion.
+
+**The reasoning being tested.** Combining models only pays when they fail on
+different rows. Two models at equal accuracy that are wrong about the same
+customers are seeing the same thing and there is nothing to pool; two that
+are wrong about different customers each hold something the other lacks. The
+README's information-ceiling claim rested on three ROC-AUCs landing within
+0.002 of each other, which is *circumstantial* — models can reach the same
+score while disagreeing completely about who churns.
+
+**The measured answer: they fail on the same people.** Error correlation
+`corr(y − p)` between the three models is 0.964 to 0.980. At each model's own
+profit-optimal threshold, 65% of all errors are made by all three
+simultaneously, with pairwise Jaccard overlap of 0.72 to 0.78. Averaging the
+three moves out-of-fold ROC-AUC from 0.8492 to 0.8505 — inside the ~0.019
+fold-to-fold standard deviation — and yields $26,780 in profit, which *loses*
+to Random Forest alone at $27,000.
+
+So the answer to your question is no, and that is the useful outcome: it turns
+the README's information ceiling from an inference into a measurement. Three
+structurally different algorithms — boosted trees, bagged trees, a linear
+model — failing on the same 65% of customers is what a ceiling looks like when
+you measure it. It is also the documented reason there is no stacking here.
+
+A judgement call inside the analysis: each model is judged at its *own*
+profit-optimal threshold rather than a shared cutoff. Using one shared
+threshold would manufacture disagreement the deployed system would never
+see, since each model ships with its own.
+
+**Cell 35 was modified**, which is the only change to an existing cell. It
+discarded each tuned estimator after reading its score, so the appendix had
+nothing to analyse. It now stores them in a `tuned_estimators` dict. This
+changes nothing about the search or the comparison table — it only keeps
+objects that were already being built. `CLAUDE.md` records the resulting
+dependency: cell 46 needs `tuned_estimators` from cell 35, so running 46 alone
+after a kernel restart will not work.
+
+The two new cells were appended at the end, after the save cells, so no
+existing index moved and nothing is written to disk.
+
+`README.md`'s model-comparison section gained the error-overlap table and the
+explanation, placed directly after the information-ceiling sentence it
+supports.
+
+**Why:** You asked whether it was worth checking, and then asked for it to be
+visible that the individual mistakes had been investigated — not just the
+aggregate scores.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+cell-35 modification was necessary to make the analysis possible rather than
+separately chosen, and the ensemble/profit comparison, the two-panel figure,
+and the `CLAUDE.md` updates were added on initiative.
+
+**Verification status:** Measured, and the cell was executed before being
+inserted — which caught a real bug. The first version unpacked
+`best_threshold_for`'s return value backwards, printing the threshold in the
+profit column ("profit @ 26640.00: $0"). That was fixed and the cell re-run.
+After insertion it was executed a second time by reading its source straight
+out of the notebook, to confirm the committed version is the tested version.
+
+The Random Forest estimator used is the same one the comparison table reports:
+its search was re-run independently and reproduced ROC-AUC 0.8441263938641443
+against the table's 0.844126. Figures vary in the last digit between runs
+(65.2% vs 65.3% shared errors, 1023 vs 1026 pairwise overlaps) because the
+Logistic Regression threshold is itself unstable on a flat curve, as recorded
+earlier; the README quotes rounded values that hold across runs.
+
+One number I deliberately did **not** publish: an "oracle" AUC of 0.940 from
+letting a referee pick the best model per customer. It uses the labels to
+choose, so no realizable combiner can approach it, and quoting it would
+overstate what is achievable. It is mentioned here only so nobody recomputes
+it and thinks it was missed.
+
+The new code cell carries no baked-in outputs, `xgboost_churn_pipeline.pkl`,
+`model_metadata.json` and `simulated_new_customers.csv` are untouched, and the
+test suite is unaffected at 118 passing. Committed.
