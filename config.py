@@ -295,8 +295,9 @@ def _current_library_versions() -> dict[str, str]:
     this check is about, and it is what wins if a shadowed second install
     ever makes the two disagree. The metadata fallback is what lets this
     module stop importing scikit-learn and XGBoost purely to read a string:
-    that import cost 559ms and 33ms of a 771ms `import config`, paid by
-    every consumer including tests that never touch either library.
+    those two cost 559ms and 33ms of a 771ms `import config`, paid by every
+    consumer including tests that never touch either library. Dropping them
+    took `import config` to 226ms.
     """
     versions = {}
     for distribution, module_name in _TRACKED_LIBRARIES.items():

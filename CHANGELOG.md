@@ -2514,3 +2514,76 @@ run. Cells 26 and 30 were verified by executing their logic against saved
 predictions rather than in the notebook itself, and the regenerated sample CSV
 came from a script reproducing cell 40's sampling rather than from cell 40.
 Committed.
+
+---
+
+## 2026-08-23 — Second review pass: a wrong SHAP claim and three imprecise ones
+
+**Files touched:** `README.md`, `config.py`, `CLAUDE.md`
+
+**What changed:** Asked to check the item-12 work again after the first pass
+found four problems, I did, and found four more. One is a substantive error.
+
+*The engineered-features claim in the Interpretability section was wrong.* I
+had written that `contractvstenure` ranks second and that "the remaining
+engineered features (`total_services`, `family_tie`, `charge_change_ratio`)
+land far lower". That named three of the five remaining features, omitted
+`average_monthly_charges` and `is_auto_pay` entirely, and characterised the
+group with a vague phrase I had not actually checked. The real distribution is
+far more interesting and is now in the README as a table of all six with their
+ranks out of 51: `contractvstenure` 2nd at 0.2821, `average_monthly_charges`
+10th at 0.1092 — which is not "far lower" by any reading — `charge_change_ratio`
+17th, `total_services` 20th, and then `is_auto_pay` and `family_tie` at ranks
+50 and 51 with mean |SHAP| of **exactly zero**. Not rounded to zero: their SHAP
+values are 0.0 for all 1,405 test rows, and inspecting the booster confirms it
+contains no split on either feature. Two of the six engineered features are
+computed on every API request and every batch row and contribute nothing to any
+prediction. The section now says so, notes the six together carry 15.5% of
+total attribution with almost all of it from one feature, and observes that
+`is_auto_pay` is the feature whose `.str` handling `feature_engineering_telco.py`
+guards most carefully — that guard protects the column contract, not accuracy.
+
+*The campaign description was over-specific.* I had called the modelled
+intervention "a flat $20 discount offer". The notebook deliberately leaves it
+open — its own comment says "a discount/incentive, or agent outreach time" —
+so the README now quotes that rather than inventing a discount, and the
+follow-on sentence no longer contrasts against "a price cut".
+
+*The documented test-suite runtime was false precision.* CLAUDE.md said ~3.8 s
+and the README ~4 s. On this machine the suite ran at ~2 s early in the session
+and ~8.8 s later, consistently. That was worth checking rather than assuming,
+so it was: the pre-item-12 commit was checked out into a separate worktree and
+runs at ~8.6 s too, which rules out a regression from this work and points at
+machine load. Since no single number is reproducible, both files now say "a few
+seconds" and "162 tests" rather than quoting one.
+
+*A misleading figure in a docstring.* `_current_library_versions` said the
+scikit-learn and XGBoost imports "cost 559ms and 33ms of a 771ms import
+config", which invites the reader to expect a 592ms saving. The measured
+end-to-end change is 771ms to 226ms. The docstring now states that outcome
+too.
+
+**Why:** The item-12 batch was large and much of it was written faster than it
+was checked. Two review passes have now found eight issues between them, which
+is the argument for the passes rather than against them.
+
+**Requested or incidental:** The review was requested; all four edits are
+corrections to my own prior work.
+
+**Verification status:** Everything asserted above was executed. The SHAP
+figures were recomputed from scratch in a second independent run and all eight
+published rows reproduce to four decimals; the zeros were then confirmed two
+ways, by `max|shap|` over all 1,405 rows and by checking the booster's split
+list. The new 503 test was shown to have teeth by reproducing the pre-fix
+failure directly (`'>=' not supported between instances of 'float' and
+'NoneType'`). `TestClient(app)` without a context manager was confirmed not to
+run the lifespan, which is what the same test depends on. An AST scan for
+unused imports across all six source modules comes back clean. Every relative
+link in the README resolves. The suite is 162 passing, the version gate passes,
+the batch script runs (15 of 50 flagged), the notebook still has 50 cells and
+parses clean.
+
+The unexecuted set is unchanged from the previous entry: notebook cells 22, 26,
+30, 35 and 40 have not been run inside a real top-to-bottom execution, though
+26 and 30 were verified by executing their logic against saved out-of-fold
+predictions. Committed.

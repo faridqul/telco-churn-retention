@@ -394,21 +394,42 @@ Three findings worth drawing out:
   Customers who haven't committed and haven't been around long are the
   churners, which is intuitive — the useful part is that the model says so
   loudly rather than spreading attribution thinly.
-- **One engineered feature earns its place, decisively.**
-  `contractvstenure` — contract length ordinal × tenure — ranks **second
-  overall**, above raw `tenure` itself. The interaction carries information
+- **Of the six engineered features, one is excellent and two are dead.**
+  Their ranks out of 51:
+
+  | Engineered feature | Rank | Mean \|SHAP\| |
+  |---|---|---|
+  | `contractvstenure` | **2** | 0.2821 |
+  | `average_monthly_charges` | 10 | 0.1092 |
+  | `charge_change_ratio` | 17 | 0.0328 |
+  | `total_services` | 20 | 0.0234 |
+  | `is_auto_pay` | 50 | **0.0000** |
+  | `family_tie` | 51 | **0.0000** |
+
+  `contractvstenure` — contract length ordinal × tenure — ranks second
+  overall, above raw `tenure` itself, because the interaction carries what
   neither parent has alone: two years on a month-to-month contract means
-  something different from two years on a two-year contract. The remaining
-  engineered features (`total_services`, `family_tie`, `charge_change_ratio`)
-  land far lower, so this is one clear win rather than a vindication of the
-  whole set.
+  something different from two years on a two-year contract.
+
+  The two zeros are exact, not rounded — the trained booster contains **no
+  split on either feature**, so they contribute nothing to any prediction.
+  They are computed on every request and every batch row for no effect. The
+  six together carry 15.5% of total attribution, essentially all of it from
+  one feature. Dropping the two dead ones is a safe simplification; it is
+  left in place here only because removing a column changes the feature
+  schema and so requires a retrain. (Worth noting `is_auto_pay` is the
+  feature whose `.str` handling `feature_engineering_telco.py` guards most
+  carefully — that guard is protecting the pipeline's column contract, not
+  the model's accuracy.)
 - **Two drivers are directly actionable, and the campaign ignores them.**
   `onlinesecurity = No` (0.197) and `techsupport = No` (0.142) together carry
   more attribution than `tenure`. Unlike contract type or tenure, these are
   add-ons the business can simply *give* someone. The retention campaign
-  modelled here is a flat $20 discount offer applied uniformly; SHAP suggests
-  bundling a security or support add-on to the customers missing one may be a
-  better intervention than a price cut. That is a hypothesis this data cannot
+  modelled here spends a flat $20 per targeted customer on an unspecified
+  intervention — the notebook's own note calls it "a discount/incentive, or
+  agent outreach time" — applied uniformly. SHAP suggests
+  targeting that spend specifically at the add-on someone is missing may beat
+  spending it undifferentiated. That is a hypothesis this data cannot
   confirm — it is correlational, and customers who decline add-ons may differ
   in ways the model can't see — but it is the kind of lead worth an A/B test,
   and it is a more specific next step than "improve the model."
@@ -575,7 +596,7 @@ consumers cannot drift into accepting different inputs.
 ```
 uv run pytest -q
 ```
-162 tests, ~4 s. They cover feature engineering edge cases, API
+162 tests. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.
