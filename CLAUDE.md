@@ -276,13 +276,21 @@ images would erode.
   builder layers, including the ~440 MB venv. That cost is what buys the 2.5x
   speedup: `mode=min` would cache only the final image and skip the expensive
   `uv sync` layer, which is the one worth reusing.
-- **A `pull_request` run is slower than a `push` run on the same commit, and
-  that is not a regression.** Measured 2m38s on the PR event against 42s on
-  the push (both at `1a36c6b`). GitHub scopes Actions caches by ref: a PR run
-  can restore caches from its *base* and the default branch, not from the head
-  branch, so it cannot see what the branch's own push runs wrote. Expect
-  cold-cache timings on PR checks until the branch merges and `main` starts
-  carrying the cache.
+- **`push` and `pull_request` keep separate cache scopes, so each pays exactly
+  one cold run.** A slow PR check right after fast push checks is not a
+  regression. Measured, counting `CACHED` layers in the build log:
+
+  | event | run | CACHED layers | docker job |
+  |---|---|---|---|
+  | push | 32672676187 | 0 | 2m5s |
+  | push | 32672906226 | 15 | 50s |
+  | pull_request | 32673084519 | **0** | **2m38s** |
+  | pull_request | 32673261952 | 15 | 43s |
+
+  The first PR run could not restore the cache the branch's push runs had
+  written — different scope — so it rebuilt cold. The *second* PR run restored
+  what the first one wrote and dropped to 43s. Both scopes are warm from their
+  own second run onward; merging is not required for that.
 
 ## CHANGELOG.md — mandatory, every session
 

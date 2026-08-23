@@ -3409,3 +3409,59 @@ compared against run
 [32673006178](https://github.com/faridqul/telco-churn-retention/actions/runs/32673006178)
 (`push`, same commit `1a36c6b`): `test` 22s, `docker` 42s. PR reports
 `MERGEABLE (CLEAN)`. Documentation only; no code changed.
+
+---
+
+## 2026-08-24 — Correction: PR cache scoping, and the previous entry's claim was wrong
+
+**Files touched:**
+- `CLAUDE.md` (rewrote the bullet added in the previous entry; it now carries a
+  measured table instead of an inferred explanation)
+
+**What changed:** The previous entry explained a slow PR-event CI run by saying
+a `pull_request` run "can restore caches from its *base* and the default
+branch, not from the head branch", and concluded: "Expect cold-cache timings on
+PR checks until the branch merges and `main` starts carrying the cache."
+
+The second half of that is **wrong**, and the next PR run disproved it within
+minutes. Pushing the commit that contained the claim triggered a second
+`pull_request` run, which completed its `docker` job in **43s** — warm, with no
+merge having happened.
+
+What is actually going on, counted from `CACHED` layers in the build logs
+rather than inferred:
+
+| event | run | CACHED layers | docker job |
+|---|---|---|---|
+| push | 32672676187 | 0 | 2m5s |
+| push | 32672906226 | 15 | 50s |
+| pull_request | 32673084519 | **0** | **2m38s** |
+| pull_request | 32673261952 | 15 | 43s |
+
+`push` and `pull_request` maintain **separate** cache scopes. The first run in
+each scope is cold; every run after that in the same scope is warm. The first
+PR run genuinely could not read what the push runs had written — that part of
+the previous entry held — but it wrote its own cache, which the second PR run
+restored. Merging has nothing to do with it.
+
+**Why:** I explained a one-off observation with a mechanism I had not measured,
+and stated a forward-looking prediction ("until the branch merges") that the
+very next run falsified. The corrected bullet reports counts from the logs and
+makes no prediction beyond what was observed.
+
+**Requested or incidental:** Incidental — a correction to my own previous
+entry, caught by checking the follow-up run instead of assuming it would match.
+
+**Correction to an earlier entry:** the entry titled "Record why a PR-event CI
+run is slower than a push run" contains the wrong claim quoted above. Per this
+file's append-only rule that entry is left exactly as written; this paragraph
+supersedes it. Its factual observations (2m38s on the PR event vs 42s on the
+push at `1a36c6b`) were correct — only the causal explanation and the
+prediction were not.
+
+**Verification status:** Verified on GitHub. `CACHED` layer counts obtained
+with `gh run view <run> --job <job> --log` and counted per run; the two
+`pull_request` runs import different cache manifests
+(`gha:6178796840260627049` and `gha:1873493280279772642`), confirming the
+second read a scope the first had populated. All four runs concluded
+`success`. Documentation only; no code changed.
