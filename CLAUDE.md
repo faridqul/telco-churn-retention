@@ -261,7 +261,19 @@ images would erode.
 - CI's `docker` job runs **parallel to** `test`, not after it. It builds the
   image and smoke-tests the running container: `/predict` pinned at
   `0.7443000078201294`, an unknown category rejected with 422, and the batch
-  scorer writing through a mounted `/data` as non-root.
+  scorer writing through a mounted `/data` as non-root. **Confirmed green on
+  GitHub Actions** (run
+  [32672676187](https://github.com/faridqul/telco-churn-retention/actions/runs/32672676187),
+  2026-08-23): `docker` 2m5s, `test` 16s. The runner's own log shows the trim
+  removing 288 MB, both build-time checks printing OK, and the served
+  probability matching the pin -- so those numbers reproduce on a clean
+  machine, not just locally.
+- **Expect ~2 minutes for the `docker` job, and don't "optimise" the cache
+  export away.** `cache-to: type=gha,mode=max` costs ~60s per run (20.7s
+  preparing + 41.0s sending) because it exports the intermediate builder
+  layers, including the ~440 MB venv. That is the point: `mode=min` would
+  cache only the final image and skip the expensive `uv sync` layer, which is
+  the one worth reusing.
 
 ## CHANGELOG.md — mandatory, every session
 

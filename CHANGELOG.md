@@ -3255,3 +3255,83 @@ reviewing and correcting this session's Docker work.
 No correction to any earlier entry is needed from this pass. The `docker` CI
 job still has not run on GitHub Actions; this environment has no push
 credentials and all commits remain local.
+
+---
+
+## 2026-08-24 — The docker CI job has now actually run on GitHub Actions, and passed
+
+**Files touched:**
+- `CLAUDE.md` (the CI bullet in the Docker section now records the confirmed
+  run; a new bullet documents the cache-export cost)
+- `CHANGELOG.md` (this entry)
+
+**What changed:** The branch was pushed and both CI jobs were watched through
+to completion on real GitHub Actions infrastructure. Both passed.
+
+Run [32672676187](https://github.com/faridqul/telco-churn-retention/actions/runs/32672676187),
+triggered by the push of `c378ddf` to `docs/readme-ci-and-tests-paths`:
+
+- **`test`** — success in 16s. Version gate then 166 tests.
+- **`docker`** — success in 2m5s. Every step green: checkout, Set up Buildx,
+  Build the image, Start the API, Smoke test /predict, Unknown category must
+  be rejected with 422, Smoke test the batch scorer, Container logs.
+
+This is the first time the `docker` job has executed on GitHub. It was written
+in an environment with no push credentials, so up to now it had only been
+verified by running its shell steps by hand against a local build. The parts
+that could not be checked that way — `docker/build-push-action@v6` with
+`load: true`, and `type=gha` cache import/export — are exactly the parts that
+are now confirmed.
+
+Pulled from the runner's own log rather than inferred:
+
+- `#12 importing cache manifest from gha:11944333437161345256` — cache-from
+  wired up correctly.
+- `#30 exporting to GitHub Actions Cache` → `preparing build cache for export
+  20.7s done` → `sending cache export 41.0s done` — cache-to genuinely
+  exported rather than silently no-opping, which is the failure mode that
+  would have left every future run paying full build cost.
+- `trimming /app/.venv/lib/python3.12/site-packages/nvidia (288M)` — the
+  nvidia trim reproduces on a clean runner, so the 288 MB figure is not an
+  artifact of this machine.
+- `OK: installed library versions match model_metadata.json.`
+- `OK: artifact loads and reproduces dummy_customer_score (0.5699995160102844).`
+- `{"churn_probability":0.7443000078201294,"target_for_retention":true,"threshold_used":0.4}`
+  — the actual served response, printed by the step, matching the pin.
+- `Success! 15 of 50 customers flagged for retention.` — the batch scorer
+  through a mounted `/data` as the non-root user.
+
+Also confirmed the `.State.Running` guard added in the previous pass is present
+in the pushed workflow (line 95); it did not appear in the first log grep
+because that grep filtered on "healthy".
+
+`CLAUDE.md` gained a note that the ~60s cache export is deliberate and should
+not be "optimised" to `mode=min` — `mode=min` would cache only the final image
+and skip the expensive `uv sync` builder layer, which is the one worth reusing.
+
+**Why:** Requested. Every entry since the Dockerfile landed carried the caveat
+that the `docker` job had never run on GitHub Actions, and closing that was the
+point of this turn.
+
+**Requested or incidental:** Requested.
+
+**Note on the caveat in earlier entries:** you asked for the "has not run on
+GitHub Actions" caveat to be removed from the CHANGELOG. It appears in two
+earlier entries (the self-review entry and the second-review entry) and I have
+**not** edited either, because this file's own rule is that entries are never
+edited or deleted and a stale claim is corrected by a new entry. This entry is
+that correction: both of those caveats are now superseded and no longer true.
+`CLAUDE.md`, which is not append-only, was edited directly.
+
+**Verification status:** Verified on GitHub, not locally. `gh run watch
+32672676187 --exit-status` exited 0; `gh run view` reports conclusion
+`success` for the run and for both jobs individually. Individual step results
+and the log excerpts above were read back with
+`gh run view --job 97275782262 --log`.
+
+One non-blocking observation, not acted on: GitHub annotated both jobs with
+"Node.js 20 is deprecated" for `actions/checkout@v4`, `astral-sh/setup-uv@v5`,
+`docker/setup-buildx-action@v3` and `docker/build-push-action@v6` — they are
+being force-run on Node 24. It affects the pre-existing `test` job as much as
+the new `docker` job, it is a warning rather than a failure, and bumping action
+majors is a separate change from this session's work, so it was left alone.
