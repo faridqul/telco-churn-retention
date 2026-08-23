@@ -3,8 +3,8 @@
   "model": "XGBoost (Tuned)",
   "cv_roc_auc_mean": 0.849141178092052,
   "cv_roc_auc_std": 0.017473991027652763,
-  "trained_at": "2026-08-23T10:30:20.493363+00:00",
-  "git_commit": "c87d55e3ba84fe385634cbbee419a88b455f6671",
+  "trained_at": "2026-08-23T11:09:26.552942+00:00",
+  "git_commit": "e93806115a123ff99a94d13c90cac0e168c5717d",
   "feature_schema_version": "1.0",
   "hash": "e509e674fc08e00ab0cc0b9bdc61fb26128e65c24d272ab9f68a7271c59f043e",
   "library_versions": {

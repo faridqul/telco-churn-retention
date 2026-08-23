@@ -1960,3 +1960,67 @@ A note on scope: `CLAUDE.md` and this file still reference `AUDIT.md` finding
 codes. That is deliberate — they are documentation about the project's
 history, where a cross-reference is the point, rather than code that has to
 stand on its own. Only comments inside code were changed.
+
+---
+
+## 2026-08-23 — Refresh the Logistic Regression row after a full notebook re-execution
+
+**Files touched:** `README.md`
+
+**What changed:** The notebook was re-executed end to end (all 39 code cells,
+execution counts 1 through 39 with no gaps, so this was a genuine clean run
+from a fresh kernel rather than a few cells re-run in place). That run rewrote
+`model_metadata.json` and the stored cell outputs. Comparing the freshly
+produced outputs against the figures the README publishes turned up exactly
+one disagreement, in the Logistic Regression row of the model-comparison
+table. The README carried ROC-AUC 0.843892, std 0.018902, best threshold 0.62
+and accuracy 0.7867; the actual run produced 0.843903, 0.018882, 0.58 and
+0.7758. Its profit was $26,200 in both, and the ordering of the three models
+was unchanged.
+
+Four places were corrected. The comparison table row itself. The sentence
+further up that lists all three ROC-AUC figures inline, which quoted the old
+0.843892. The paragraph about the threshold split, which asserted that
+Logistic Regression's optimum (0.62) sat above Random Forest's (0.58) — in
+this run both models land on 0.58, so the sentence now says so instead of
+naming two different numbers. And the italic footnote under the table, which
+was rewritten more substantially: it used to describe the row as having
+*moved* because the search switched from scikit-learn's deprecated `penalty`
+argument to `l1_ratio`, presenting 0.58 → 0.62 as a consequence of that
+migration. This run lands back on 0.58 with the `l1_ratio` code in place,
+which contradicts that framing. The real explanation is the one already
+recorded in the project notes: this model's ROC-AUC surface is flat, so the
+winning `C` slides between near-tied random draws from run to run and the
+threshold follows it. The footnote now says that instead, and gives the
+observed ranges (threshold 0.58 or 0.62, accuracy 0.7758 to 0.7867, ROC-AUC
+0.843891 to 0.843903) rather than presenting one run's values as a permanent
+before-and-after.
+
+**Why:** The project's own post-re-execution checklist calls for comparing the
+README against the notebook's real outputs, and singles out both the Logistic
+Regression row and the threshold-split prose as the two places that have gone
+stale this way before. Both had. Since the next phase of work is
+containerisation, the published figures needed to match the artifact the
+container will ship.
+
+**Requested or incidental:** Incidental. What was asked for was a verification
+that three specific numbers survived the extraction of `campaign_profit()` —
+cell 26's threshold and peak profit, cell 30's test-set profit, and cell 35's
+three profit figures. All six of those matched exactly. The README correction
+is separate work that the comparison surfaced along the way.
+
+**Verification status:** Executed and checked, not merely reasoned about.
+`model_metadata.json` moved only in `trained_at` and `git_commit`, which is
+the project's own signal that the artifact reproduced and the model did not
+change. No notebook cell's *source* changed — only stored outputs — and cells
+26 and 30 reproduced byte-identically, which is the strongest available
+confirmation that rewiring them onto `campaign_profit()` altered nothing:
+threshold 0.40, peak OOF profit $26,640, test-set profit $6,660. Cell 35 gave
+26,640 / 27,000 / 26,200 as expected. The two appendix cells whose outputs
+also changed were checked against the README and still agree with it — cell 46
+on error overlap (correlation 0.964–0.980, 64.6% shared errors, Jaccard
+0.72–0.78, averaging at $26,780 versus Random Forest's $27,000) and cell 49 on
+threshold precision (0.400 ± 0.047, the 0.35–0.46 plateau, the +0.029 leakage
+shift with its interval straddling zero). Test suite: 141 passing in ~2s. Not
+committed yet; the re-executed notebook and the rewritten metadata are also
+still uncommitted in the working tree.
