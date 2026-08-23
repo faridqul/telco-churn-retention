@@ -145,7 +145,7 @@ Sensitivity to the minority class cuts both ways — there are simply fewer
 positives for each fold's estimate to rest on.
 
 **Model comparison** — XGBoost, Logistic Regression, and Random Forest
-converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843901 /
+converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843900 /
 0.844126, each well within one standard deviation of the others). Rather than
 read this as "the model choice didn't matter," I read it as evidence the
 dataset itself has an information ceiling around ROC-AUC ≈ 0.845 — churn here
@@ -189,7 +189,7 @@ threshold (same method as XGBoost's: a scan over 5-fold OOF predictions on
 |---|---|---|---|---|---|---|
 | XGBoost (Tuned) | 0.845812 | 0.019575 | 0.6603 | 0.40 | 0.7876 | 26,640 |
 | Random Forest | 0.844126 | 0.016803 | 0.6532 | 0.58 | 0.7810 | 27,000 |
-| Logistic Regression | 0.843901 | 0.018884 | 0.6548 | 0.58 | 0.7758 | 26,200 |
+| Logistic Regression | 0.843900 | 0.018874 | 0.6548 | 0.58 | 0.7758 | 26,200 |
 
 PR-AUC is computed on the same out-of-fold predictions as the threshold and
 profit columns, so every column shares one basis. Note it **reorders the two

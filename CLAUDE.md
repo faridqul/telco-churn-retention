@@ -40,26 +40,30 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 
 ## Notebook cell map
 
-50 cells. 0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature
-engineering · 12 ColumnTransformer · 14–21 baselines/imbalance (marked
+51 cells. 0–1 load + dataset hash · 3–10 cleaning · 11 splits + feature
+engineering · 12 `make_preprocessor()` · 14–21 baselines/imbalance (marked
 removable) · 22–25 RandomizedSearchCV (200 iters) · **26 threshold selection
 via OOF — the heart** · 27 sensitivity sweep · 28–29 calibration curve ·
-30–33 test-set scoring · 35 model comparison · 38–39 SHAP · 40–42 save
-artifact · 43–44 appendix: display-only Platt scaling + score→risk table ·
-45–46 appendix: cross-model error-overlap analysis · 48–49 appendix:
-threshold plateau + M6 leakage check.
+30–33 test-set scoring · 35 model comparison · 36–37 the user's own notes ·
+39–40 SHAP · 41–43 save artifact · 44–45 appendix: display-only Platt scaling
++ score→risk table · 46–48 appendix: cross-model error-overlap analysis ·
+49–50 appendix: threshold plateau + selection-leakage check.
 
-**43–49 save nothing.** They fit a calibrator for display and are appended
+Indices above 37 shifted +1 when a markdown note was added at 37; anything
+citing the older numbering is off by one there (SHAP was 38–39, save 40–42).
+
+**44–50 save nothing.** They fit a calibrator for display and are appended
 *after* the save cells on purpose, so the artifact, the metadata and the 0.40
-threshold are unaffected by them. Don't move them above cell 42, and don't
+threshold are unaffected by them. Don't move them above cell 43, and don't
 wire their calibrator into the pipeline without reading the note in
-`README.md` about why the shipped model is deliberately uncalibrated. Cell 46
-needs `tuned_estimators`, which cell 35 fills — running 46 alone after a
+`README.md` about why the shipped model is deliberately uncalibrated. Cell 47
+needs `tuned_estimators`, which cell 35 fills — running 47 alone after a
 kernel restart won't work.
 
-Indices shifted by +2 above cell 27 when the calibration cells were added —
-`AUDIT.md` predates that and still uses the old numbering (its "cell 33" is
-now 35, its "cell 38" is now 40).
+Numbering has shifted twice: +2 above cell 27 when the calibration cells were
+added, then +1 above cell 37 when a note was added there. `AUDIT.md` predates
+both and uses the oldest numbering (its "cell 33" is now 35, its "cell 38" is
+now 41).
 
 ## Invariants — don't break these
 

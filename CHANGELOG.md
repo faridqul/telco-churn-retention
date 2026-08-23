@@ -2647,3 +2647,58 @@ error-overlap table (correlations 0.964–0.980, 64.5% shared errors, Jaccard
 0.72–0.78, average-of-three profit $26,780) all agree. The SHAP section needs
 no recheck this time: the pickle is byte-identical, so the attributions cannot
 have moved. Committed.
+
+---
+
+## 2026-08-23 — Cold-kernel re-run: last caveat closed; cell numbering shifted again
+
+**Files touched:** `README.md`, `CLAUDE.md` (plus `model_metadata.json` and
+`telco_customer_churn.ipynb`, rewritten by the user's run)
+
+**What changed:** The user did a restart-and-run-all, which closes the one
+caveat the previous entry left open. That run's execution counts are 1 through
+39 with no gaps, so it is a genuine cold-kernel execution rather than a Run All
+over a warm kernel, and `model_metadata.json` again moved only in `trained_at`
+and `git_commit` while the pickle stayed byte-identical. Cells 26 and 30
+produced byte-identical output for the second run running, this time from a
+kernel with no prior state at all. Nothing in the notebook depended on a stale
+variable, which was the specific risk a warm-kernel run could not rule out.
+
+Two things needed syncing.
+
+The Logistic Regression row moved again — fourth run, fourth set of digits:
+ROC-AUC 0.843901 → 0.843900 and std 0.018884 → 0.018874. Accuracy, threshold,
+profit and PR-AUC were all unchanged this time. Table row and inline list
+updated.
+
+More importantly, the notebook is now **51 cells, not 50**. The user added a
+markdown note at index 37 ("decided, not it doesnt", answering their own
+question at cell 36 about whether stacking would help), which shifted every
+index above it by one. CLAUDE.md's cell map named the old positions, so it now
+pointed at the wrong cells for SHAP, the save block and all four appendices.
+The map is corrected — SHAP is 39–40, the save block 41–43, the appendices
+44–50 — and the two inline warnings that cited specific indices were updated
+with it ("don't move them above cell 43", "cell 47 needs `tuned_estimators`").
+The note about historical renumbering now records both shifts rather than one,
+so the `AUDIT.md` cross-reference stays usable: its "cell 38" is now 41.
+
+**Why:** Post-execution verification, and the cell map is the single most
+load-bearing thing in CLAUDE.md — a wrong index there sends the next session to
+the wrong cell.
+
+**Requested or incidental:** The user reported the re-run. The README sync
+follows from it; the CLAUDE.md cell-map correction is incidental, caught by
+diffing cell sources rather than by being told, and this file's own rule
+requires an entry for any CLAUDE.md edit.
+
+**Verification status:** Executed. Execution counts verified as exactly 1..39.
+`xgboost_churn_pipeline.pkl` and `simulated_new_customers.csv` both show no
+diff. Cells 26 and 30 confirmed byte-identical against the committed version.
+The new cell was read directly to confirm it is a markdown note and not code.
+The corrected cell map was checked by printing each named index and its first
+line. Tests 162 passing, version gate passes.
+
+Worth recording as a pattern: the notebook's cell indices have now moved twice
+because of user-added markdown, and both times the documentation drifted
+silently. Diffing cell *sources* — not just outputs — after a re-run is what
+catches it.
