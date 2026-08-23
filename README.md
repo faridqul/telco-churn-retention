@@ -97,7 +97,7 @@ account and API credentials configured locally
 |---|---|
 | CV ROC-AUC (train) | 0.8491 ± 0.0175 |
 | Test ROC-AUC | 0.8441 |
-| Operating threshold | 0.40 (profit-optimized via 5-fold OOF on `X_train`, not the default 0.5) |
+| Operating threshold | **0.40 ± 0.05** (profit-optimized via 5-fold OOF on `X_train`, not the default 0.5) |
 | Test precision / recall / F1 (churn class) | 0.59 / 0.69 / 0.63 |
 | Test accuracy | 79% |
 | Test confusion matrix | TP 256, FP 179, FN 116, TN 854 |
@@ -242,6 +242,43 @@ correct given the current assumptions, not as precise figures — replacing
 `clv`, `cost`, and `success_rate` with real historical campaign data would be
 the single highest-value next step before trusting this model's threshold in
 production.
+
+### How precise is 0.40, and is it optimistic?
+
+The threshold is the argmax of a profit curve over ~90 candidates, and near
+an optimum a curve is flat by definition — so an argmax picks the peak of the
+noise as much as the peak of the signal. The sweep above measures uncertainty
+in the *assumptions*; this measures uncertainty in the *estimate*.
+
+| | Value |
+|---|---|
+| Per-fold argmax (5 folds) | 0.404 ± 0.036 |
+| Bootstrap over customers (500 resamples) | 0.400 ± 0.047, 95% interval [0.29, 0.46] |
+| Thresholds within 1% of peak profit | **0.35 – 0.46** |
+| Cost of being anywhere in that band | ≤ $260 of $26,640 |
+
+So the optimum is a plateau about 0.11 wide, not a point, which is why the
+Results table reports **0.40 ± 0.05**. Anything in 0.35–0.46 is the same
+decision in every way that matters.
+
+That number also settles a leakage question worth being explicit about. The
+threshold comes from out-of-fold predictions over `X_train`, but the
+hyperparameters were chosen on `X_tr` — 80% of those same rows. Refitting per
+fold removes parameter leakage, not *selection* leakage, so the scores could
+be mildly optimistic on most rows. `X_val` is the clean control, since the
+search never touched it:
+
+| Rows | Threshold |
+|---|---|
+| `X_tr` — hyperparameters did see them (n=4,492) | 0.38 ± 0.051 |
+| `X_val` — hyperparameters never saw them (n=1,124) | 0.43 ± 0.077 |
+| Difference | +0.029, 95% CI **[−0.19, +0.18]** |
+
+The interval straddles zero. The leakage is real as a mechanism but shifts the
+threshold by less than the estimator's own resampling noise, so it isn't
+measurable at this sample size — and nested CV would buy precision the profit
+curve can't use, given the whole plateau is worth $260. Documented as checked
+rather than fixed.
 
 ### Why the searched threshold sits above the closed form
 

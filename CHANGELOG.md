@@ -1743,3 +1743,78 @@ notebook on disk was integrity-checked before committing: valid JSON, 47
 cells, no empty cells, both appendix sections present and non-trivial
 (cells 43–46 at 943 / 3,535 / 878 / 4,741 characters), and cell 35 still
 retains `tuned_estimators`. Test suite: 118 passing, canary matching its pin.
+
+---
+
+## 2026-08-23 — Threshold as a range, and the X_val-only leakage check (item 6, M6)
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (markdown + code cells appended at 48 and 49)
+- `README.md`
+- `CLAUDE.md`
+- `AUDIT.md`
+
+**What changed:** An appendix that answers two questions the audit filed
+separately but which turn out to be one question.
+
+**Item 6 — how precise is 0.40?** It is the argmax of a profit curve over ~90
+candidates, and near an optimum a curve is flat by definition, so an argmax
+picks the peak of the noise as much as the peak of the signal. Measured two
+independent ways: the per-fold argmax across the same 5 folds is 0.404 ± 0.036
+(individual folds 0.40, 0.38, 0.45, 0.43, 0.36), and a 500-resample bootstrap
+over customers gives 0.400 ± 0.047 with a 95% interval of [0.29, 0.46]. Every
+threshold in **0.35–0.46** is within 1% of peak profit, so the optimum is a
+plateau roughly 0.11 wide. Being anywhere in that band costs at most $260 out
+of $26,640.
+
+**M6 — is it optimistic from selection leakage?** The threshold comes from
+out-of-fold predictions over `X_train`, but the hyperparameters were chosen on
+`X_tr`, 80% of those same rows; refitting per fold removes parameter leakage,
+not selection leakage. `X_val` is the clean control. Rows the search saw give
+0.38 ± 0.051; rows it never saw give 0.43 ± 0.077; the difference is +0.029
+with a 95% CI of **[−0.19, +0.18]**, which straddles zero.
+
+**The two are coupled, and that is the real finding.** "Is this threshold
+shifted?" cannot be answered before "how much does it wobble on its own." The
+audit proposed a ≤0.02 bar for calling M6 negligible, but the estimator's own
+resampling spread is ±0.047 — the bar was tighter than the measurement
+precision, so no result at that resolution would have meant anything. With the
+spread known, the leakage shifts the threshold by about 61% of one standard
+deviation, on an interval containing zero: real as a mechanism, unmeasurable
+in size at this sample. Nested CV would buy precision the profit curve cannot
+use. Documented as checked rather than fixed, which is one of the two options
+the audit itself offered.
+
+The `README.md` Results table now reports **0.40 ± 0.05** instead of 0.40, and
+a new subsection carries both tables and the reasoning. `CLAUDE.md` records
+the plateau and the M6 outcome as facts not to re-derive.
+
+**A note on cell numbering.** Between the last commit and this one you added
+your own markdown cell at index 47 ("stacking is basically useless here,
+proven by comparing individual results"). It is untouched and is included in
+this commit; the new cells landed at 48 and 49 behind it, and the cell map in
+`CLAUDE.md` reflects the resulting 50-cell notebook.
+
+**Why:** You asked for worklist item 8 — roadmap item 6 plus finding M6 — by
+name.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+bootstrap (the audit suggested only per-fold spread), the profit-cost-of-the-
+plateau figure, the two-panel figure, and the `README.md`/`CLAUDE.md`/`AUDIT.md`
+updates were added on initiative.
+
+**Verification status:** Measured, and the cell was executed before insertion
+and again afterwards by reading its source straight out of the notebook, which
+is how the index mistake was caught — the first post-insertion run pointed at
+cell 48 and hit a syntax error, because your new cell 47 had pushed the code
+cell to 49. Re-run correctly at 49.
+
+The profit curve is computed vectorised across all candidate thresholds at
+once; the naive loop made the bootstrap take minutes, and the cell now runs in
+1.9 s. Every number in the closing narrative is computed rather than
+hardcoded — an earlier draft had a hand-written "±0.045" next to a printed
+0.047, which is precisely the drift being avoided elsewhere in this project.
+
+`xgboost_churn_pipeline.pkl`, `model_metadata.json` and
+`simulated_new_customers.csv` are untouched — nothing here is saved and the
+shipped threshold is unchanged at 0.40. Test suite: 118 passing. Committed.
