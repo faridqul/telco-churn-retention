@@ -1818,3 +1818,93 @@ hardcoded — an earlier draft had a hand-written "±0.045" next to a printed
 `xgboost_churn_pipeline.pkl`, `model_metadata.json` and
 `simulated_new_customers.csv` are untouched — nothing here is saved and the
 shipped threshold is unchanged at 0.40. Test suite: 118 passing. Committed.
+
+---
+
+## 2026-08-23 — Extract campaign_profit() and unit-test it (C11)
+
+**Files touched:**
+- `campaign_profit.py` (created)
+- `tests/test_campaign_profit.py` (created)
+- `telco_customer_churn.ipynb` (cells 2, 26, 27, 29, 30, 35, 44, 49)
+- `README.md`
+- `CLAUDE.md`
+- `AUDIT.md`
+
+**What changed:** The campaign profit formula —
+`TP * success_rate * clv - (TP + FP) * cost` — was written out by hand in
+several notebook cells, in three different shapes: a pandas column
+assignment, a bare scalar expression, and a loop body. `AUDIT.md` counted
+five copies. The real count when I checked was **seven**, because two of the
+appendix cells added earlier in this session had each grown their own copy.
+That is the defect demonstrating itself: the formula multiplies every time
+someone needs it and nobody notices.
+
+It now lives in `campaign_profit.py`, which exposes `campaign_profit()` (the
+formula), `break_even_threshold()` (the closed form `cost /
+(success_rate * clv)`, which was itself duplicated in four places),
+`confusion_at_threshold()`, `profit_curve()` and `best_threshold()`.
+
+Three deliberate design choices. The economics are **keyword-only**:
+`campaign_profit(tp, fp, 20, 200, 0.3)` with `clv` and `cost` transposed would
+run happily and be wrong by a factor of a hundred, and the whole point of
+extracting the formula is to remove that class of error, so positional
+passing raises `TypeError`. Nonsense economics are rejected rather than
+silently propagated — a negative cost or a `success_rate` of 1.5 raises
+`ValueError`. And ties in `best_threshold()` resolve to the **lowest**
+threshold: the profit curve is a plateau roughly 0.11 wide, so ties are
+common, and first-wins needed to be a documented rule rather than an accident
+of `argmax`.
+
+`campaign_profit()` returns a pandas Series when given one, rather than
+coercing everything to numpy. Cell 26 assigns the result straight back onto a
+DataFrame, and keeping the index means that assignment aligns by label
+instead of relying on positional order. Plain lists and tuples *are* coerced,
+since they cannot be multiplied by a float.
+
+`tests/test_campaign_profit.py` adds 23 tests: the formula against
+hand-computed values, against the README's published $6,660 (so the two
+cannot drift apart), the elementwise contract across lists, arrays and
+Series, keyword-only enforcement, input validation, the break-even point
+proven to be the indifference point, the clv/success_rate product identity
+the sensitivity sweep found empirically, `>=` at the boundary, tie-breaking,
+and edge cases for a perfect model and an all-negative dataset.
+
+Eight notebook cells now import and call it instead of retyping.
+
+**Why:** You asked for worklist item 9 / finding C11 by name.
+
+**Requested or incidental:** Requested. Flagged as beyond the literal ask: the
+audit asked only for `campaign_profit()`, while this also extracts
+`break_even_threshold`, `profit_curve`, `best_threshold` and
+`confusion_at_threshold` — they were duplicated too, and leaving them would
+have half-fixed the problem. Rewiring the notebook was also beyond "extract
+and unit-test", but extracting a function nothing calls would not have closed
+C11. The `README.md`, `CLAUDE.md` and `AUDIT.md` updates were on initiative.
+
+**Verification status:** Equivalence was proved **before** the notebook was
+touched, not after. Each of the existing expressions was run side by side
+against the new function on the real out-of-fold predictions: the pandas
+Series form, the scalar form that produces the published $6,660, the
+`best_threshold_for` loop over the real OOF vector, all fifteen rows of the
+sensitivity sweep, the vectorised profit curve, and the closed form. Every
+one matched exactly.
+
+After rewiring, the two appendix cells that could be executed standalone were
+re-run from the notebook source and produced byte-identical output — cell 49
+still reports 0.404 ± 0.036 per-fold and the 0.35–0.46 plateau; cell 46 still
+reports 64.5% shared errors and $26,640 / $27,000 / $26,220 / $26,780. Cell 2
+was extracted and executed to confirm the new import works.
+
+A test caught a real defect during development: the elementwise test failed
+on plain Python lists, because a list cannot be multiplied by a float. The
+function was fixed to coerce sequences rather than the test being weakened,
+and Series passthrough was then verified explicitly to confirm the fix had
+not broken the pandas path.
+
+Suite: **141 passing**, up from 118. `telco_model.py` still scores the sample
+file and flags the same 15 of 50. **Cells 26, 30 and 35 were not executed** —
+they need a full notebook run — so their correctness rests on the
+expression-level equivalence checks above rather than on observed output.
+`xgboost_churn_pipeline.pkl` and `model_metadata.json` are untouched.
+Committed.

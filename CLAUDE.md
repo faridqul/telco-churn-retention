@@ -26,11 +26,12 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 |---|---|
 | `telco_customer_churn.ipynb` | 41 cells. Training only. Produces the artifact. |
 | `feature_engineering_telco.py` | 6 derived features. Imported by the notebook, API, batch script, config, and 2 test files. **The single most load-bearing module.** Guards its own `.str` use — an all-blank `paymentmethod` degrades to `is_auto_pay=0` instead of raising (AUDIT.md M9). |
+| `campaign_profit.py` | The profit formula, once. `campaign_profit()`, `break_even_threshold()`, `profit_curve()`, `best_threshold()`. Imported by the notebook in 7 places; economics are keyword-only so `clv`/`cost` can't be swapped (AUDIT.md C11). |
 | `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. Missing/corrupt metadata is **fatal**; a bad value inside readable metadata **degrades**. |
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `tests/` | 118 tests, ~2.0 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 7 files at collection. |
+| `tests/` | 141 tests, ~3.8 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 8 files at collection. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
@@ -147,7 +148,9 @@ number the README publishes. Check these, in order:
   removes in 1.10. Same search space, but the code paths aren't
   bit-identical — the LR row's ROC-AUC moved 0.843897 → 0.843891. That cell
   now runs warning-free.
-- The profit formula is duplicated in 5 places in the notebook (AUDIT.md C11).
+- The profit formula lives in `campaign_profit.py` and nowhere else. Don't
+  retype `tp * success_rate * clv - (tp + fp) * cost` in a new cell — it was
+  duplicated 7 times before (AUDIT.md C11).
 - `tests/test_integration.py`'s fixture forces the first `N_ZERO_TENURE_ROWS`
   (3) rows to `tenure=0` so the missing-`totalcharges` rows are exact for
   every seed — it used to leave that to chance and 21 of 40 seeds produced

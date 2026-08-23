@@ -339,6 +339,8 @@ features drive individual predictions, not just aggregate feature importance.
 ```
 telco_customer_churn.ipynb    # full analysis: cleaning → modeling → SHAP → threshold sensitivity
 feature_engineering_telco.py  # shared feature logic (single source of truth)
+campaign_profit.py            # the campaign profit formula + break-even threshold,
+                               # in one place (was retyped in 7 notebook cells)
 telco_model.py                # batch scoring script (CSV in, CSV out)
 api.py                        # FastAPI service (POST /predict)
 config.py                     # shared config: threshold loading, feature-schema
@@ -351,6 +353,7 @@ tests/
   test_integration.py         # fits the real pipeline (no mocks) on synthetic data
   test_artifact.py            # loads the committed .pkl and pins its prediction
   test_input_validation.py    # batch-input domain checks + API non-finite handling
+  test_campaign_profit.py     # unit tests for the profit arithmetic
 pyproject.toml                # dependencies (managed with uv)
 .github/workflows/tests.yml   # CI: runs the test suite on every push and PR
 
@@ -466,7 +469,7 @@ consumers cannot drift into accepting different inputs.
 ```
 uv run pytest -q
 ```
-118 tests, ~2 s. They cover feature engineering edge cases, API
+141 tests, ~4 s. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.
