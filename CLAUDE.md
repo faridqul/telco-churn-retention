@@ -31,7 +31,8 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `tests/` | 141 tests, ~3.8 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 8 files at collection. |
+| `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. |
+| `tests/` | 153 tests, ~3.8 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 files at collection. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
@@ -139,8 +140,15 @@ number the README publishes. Check these, in order:
 
 ## Conventions
 
-- `optuna`, `lightgbm`, `pyarrow` are declared in `pyproject.toml` and used
-  nowhere. Don't assume Optuna is the tuner — it's `RandomizedSearchCV`.
+- The tuner is `RandomizedSearchCV`, not Optuna. (`optuna`, `lightgbm` and
+  `pyarrow` used to be declared in `pyproject.toml` and imported nowhere;
+  they were removed when dependencies were split into groups.)
+- `pyproject.toml` is split three ways: `[project.dependencies]` is the
+  runtime set a container installs, the `dev` group adds pytest/httpx, and
+  the `notebook` group (jupyter, matplotlib, seaborn, shap, kagglehub, scipy)
+  is **not installed by default**. `uv sync` gives 32 packages; re-running
+  the notebook needs `uv sync --group notebook`. Don't add a training-only
+  package to `[project.dependencies]`.
 - Notebook cell 2 uses `warnings.simplefilter('once')`, not a blanket
   `ignore` — don't restore the catch-all (AUDIT.md M5). Lifting it exposed
   ~1,457 deprecation warnings in the model-comparison cell, now fixed: it searches
@@ -155,8 +163,15 @@ number the README publishes. Check these, in order:
   (3) rows to `tenure=0` so the missing-`totalcharges` rows are exact for
   every seed — it used to leave that to chance and 21 of 40 seeds produced
   none (AUDIT.md M7).
-- CI lives in `.github/workflows/tests.yml` — runs `uv run pytest -q` on
-  every push and PR.
+- CI lives in `.github/workflows/tests.yml` — runs `check_model_environment.py`
+  and then `uv run pytest -q`, on every push and PR.
+- Two version checks exist and are deliberately different.
+  `config.validate_environment_versions()` warns and never raises (live
+  service: an outage is worse than a maybe-broken pickle);
+  `check_model_environment.py` exits non-zero (CI: no uptime to protect, so
+  "can't tell" fails). Both resolve versions through
+  `config._current_library_versions()` — keep it that way, or CI and
+  production can disagree about what's installed.
 
 ## CHANGELOG.md — mandatory, every session
 

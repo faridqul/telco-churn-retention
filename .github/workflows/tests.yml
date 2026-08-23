@@ -35,5 +35,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen
 
+      # The running service only WARNS when installed library versions differ
+      # from the ones model_metadata.json records, because crashing a live API
+      # over a patch bump is a worse outcome than the risk it guards against.
+      # That trade-off assumes a stricter check runs before deployment -- this
+      # is it. Runs before the tests on purpose: a version skew would otherwise
+      # surface as a cryptic failure in test_artifact.py, which pins a
+      # prediction against the committed .pkl, instead of as the version
+      # problem it actually is.
+      - name: Check environment matches the model artifact
+        run: uv run python check_model_environment.py
+
       - name: Run tests
         run: uv run pytest -q

@@ -289,8 +289,11 @@ def validate_environment_versions(metadata_path: str = METADATA_PATH) -> None:
     startup. An earlier version of this function hard-failed on a
     major-version difference -- that traded a probabilistic risk (the
     pickle *might* misbehave) for a certain one (the service *will* be
-    down). A hard gate belongs in CI, checked against the artifact before
-    it's deployed, not in the live service's boot path.
+    down). The hard gate lives in check_model_environment.py, which CI runs
+    against the artifact before it is deployed; this function is the weaker
+    check that remains appropriate in a live service's boot path. The two
+    share _current_library_versions() so they can never disagree about what
+    is installed.
 
     Compares full version strings (not just major.minor) since there's no
     parsing here to get subtly wrong -- any difference is reported as-is

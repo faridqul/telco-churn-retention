@@ -2072,3 +2072,173 @@ Also re-confirmed from the notebook rather than from memory: cells 26 and 30
 have outputs byte-identical to commit e938061, no cell's source changed, and
 `model_metadata.json` differs only in `trained_at` and `git_commit`. Test
 suite: 141 passing. Committed.
+
+---
+
+## 2026-08-23 — Split dependencies into runtime / dev / notebook groups
+
+**Files touched:** `pyproject.toml`, `uv.lock`, `README.md`
+
+**What changed:** `pyproject.toml` had a single flat list of fifteen packages
+covering everything the project has ever needed. It is now three sets.
+`[project.dependencies]` holds only what is required to *serve* a prediction —
+fastapi, uvicorn, joblib, numpy, pandas, scikit-learn, xgboost. The `dev`
+group keeps pytest and httpx, and is installed by default by `uv sync`, which
+is what CI relies on. A new `notebook` group holds jupyter, kagglehub,
+matplotlib, seaborn, shap and scipy, and is *not* installed by default;
+re-training now needs `uv sync --group notebook`.
+
+Three packages were deleted outright: `optuna`, `lightgbm` and `pyarrow`.
+Before removing them I checked they were genuinely unused rather than trusting
+the earlier note that said so — no `import` of any of the three exists in any
+`.py` file or in any notebook cell. `pyarrow` appears once in the repository,
+as a word inside a test docstring describing pyarrow-backed strings; the test
+itself uses pandas' own `StringDtype`. I also confirmed pyarrow is not arriving
+as a transitive requirement (pandas 3.0.5 requires only numpy and
+python-dateutil, and pyarrow's `Required-by` is empty), so removing it removes
+it for real.
+
+`scipy` was *added* to the notebook group. It is the opposite defect to the
+one this item was about: the notebook does `from scipy.stats import randint,
+uniform`, but scipy was never declared anywhere — it happened to be installed
+because scikit-learn depends on it. Declaring a direct import is the same
+principle as deleting a declaration nothing imports.
+
+`uv.lock` was regenerated, since CI's `uv sync --frozen` fails when the lock
+and `pyproject.toml` disagree. Dropping those three packages also removed five
+transitive dependencies that came with optuna alone — alembic, colorlog,
+greenlet, mako and sqlalchemy, i.e. a database migration stack that was being
+installed to run a test suite.
+
+The README gained an "Installing" block at the top of "Running it" explaining
+the two commands and why the default set is small, its repo-structure listing
+now describes the split, and its test count was corrected.
+
+**Why:** This is preparation for the Dockerfile. An image installs whatever
+`[project.dependencies]` lists, so under the old layout a container whose only
+job is loading a pickle and answering HTTP would have shipped Jupyter, SHAP
+and matplotlib. Doing the split first means the Dockerfile gets written once
+against a dependency list that already means something, instead of being
+written and then rewritten.
+
+**Requested or incidental:** Requested — this is the first half of worklist
+item 11. Adding `scipy` was not asked for and is flagged as incidental; it is
+a one-line addition of an already-installed package, made because the audit of
+"declared but unused" turned up its mirror image and leaving it seemed worse
+than fixing it.
+
+**Verification status:** Measured, not assumed. The effect was checked by
+building throwaway virtualenvs via `UV_PROJECT_ENVIRONMENT` rather than by
+re-syncing the working environment, so nothing was destroyed to find out. What
+CI will now install went from **142 packages to 32**, and from **1.4 GB to
+675 MB**. The full suite passes in that minimal environment — 153 tests, all
+green, with no notebook package present — which is the real proof that nothing
+in the runtime or test path depended on the packages that moved. `uv sync
+--frozen --group notebook` was then run in the same throwaway environment and
+every notebook import (matplotlib, seaborn, shap, kagglehub, scipy.stats)
+resolves, so training still works. `uv export`, which
+`verify_version_check.sh` depends on, still succeeds and still contains all
+five libraries that script needs. Finally the real development environment was
+re-synced with `--group notebook`, which removed exactly the eight dead
+packages and nothing else. Committed.
+
+---
+
+## 2026-08-23 — Add the CI version gate the runtime docstring had been promising
+
+**Files touched:** `check_model_environment.py` (new),
+`tests/test_check_model_environment.py` (new), `.github/workflows/tests.yml`,
+`config.py`, `README.md`
+
+**What changed:** `config.validate_environment_versions()` compares installed
+library versions against the ones recorded in `model_metadata.json` and only
+*warns*. Its reasoning is sound and unchanged: crashing a live API over a
+patch bump trades a risk that the pickle might misbehave for a certainty that
+the service is down. But the docstring justified that leniency by saying "A
+hard gate belongs in CI, checked against the artifact before it's deployed" —
+and no such gate existed. The control was excusing its own weakness by
+pointing at something nobody had built. The README repeated the same promise.
+
+`check_model_environment.py` is that gate. It reads `library_versions` from the
+artifact metadata, compares against the environment, prints every mismatch,
+and exits non-zero. The interesting part is where it deliberately *differs*
+from the runtime check: at runtime, unreadable metadata, a missing
+`library_versions` block, or a library the code doesn't track are all reasons
+to shrug and keep serving. In the gate they are all failures, because CI has
+no uptime to protect — only the question of whether this environment matches
+the artifact, and "can't tell" is not a yes.
+
+It resolves versions through `config._current_library_versions()`, the same
+function the running service uses, rather than keeping its own list. That is
+the point rather than an implementation detail: a gate that checks something
+different from what production checks can pass while production disagrees.
+For libraries that function does not track, it falls back to
+`importlib.metadata.version()` so anything recorded in the artifact still gets
+verified instead of silently skipped.
+
+A step was added to `tests.yml` that runs it, placed *before* the test suite
+on purpose: a version skew would otherwise surface as a confusing pinned-
+prediction failure in `test_artifact.py` rather than as the version problem it
+actually is. `config.py`'s docstring and the README's "Version drift"
+paragraph were both updated to describe the gate that now exists instead of
+one that doesn't.
+
+**Why:** Second half of worklist item 11, and a prerequisite for the
+Dockerfile. Once an image pins its library set, this check stops being the
+primary defence against a version-drifted artifact and becomes a cheap
+assertion that the image is what it is believed to be — but that only holds if
+the strict check exists somewhere.
+
+**Requested or incidental:** The script and the CI step were requested. The
+test file was not, and is flagged as incidental. It was written because a gate
+that cannot fail is indistinguishable from no gate, which is precisely the
+defect being closed here; shipping an unverified gate would have recreated the
+problem in a new place.
+
+**Verification status:** Executed. Every failure path was driven with a
+tampered metadata file before the tests were written: a version mismatch, a
+library recorded but not installed, a library the runtime doesn't track (which
+correctly exercised the importlib fallback and caught a deliberately wrong
+fastapi version), a missing `library_versions` block, a `library_versions`
+that is a list rather than an object, a corrupt JSON file and an absent file.
+All seven produce a non-empty problem list; the real committed metadata
+produces an empty one. The 12 new tests cover those paths plus `main()`'s exit
+codes and the requirement that all mismatches are reported at once rather than
+one per build. Suite is now 153 passing, in both the full development
+environment and the minimal environment CI will actually use. The workflow
+YAML was parsed to confirm the five steps are in the intended order. What has
+*not* been verified is a real GitHub Actions run — that happens on push.
+Committed.
+
+---
+
+## 2026-08-23 — Update CLAUDE.md for the dependency split and the new version gate
+
+**Files touched:** `CLAUDE.md`
+
+**What changed:** Three edits. The convention that read "`optuna`,
+`lightgbm`, `pyarrow` are declared in `pyproject.toml` and used nowhere" was
+false as of this session, so it now records that they were removed while
+keeping the part that still matters — that the tuner is `RandomizedSearchCV`
+and not Optuna, which is the actual trap that note existed to prevent. A new
+convention describes the three-way dependency split and warns against adding
+a training-only package to the runtime list. The CI convention now mentions
+the gate as well as the test suite, and a new bullet spells out that two
+version checks exist with deliberately opposite failure behaviour, and that
+both must keep resolving versions through
+`config._current_library_versions()`. The layout table gained a row for
+`check_model_environment.py`, and its test counts moved from 141 tests across
+8 files to 153 across 9.
+
+**Why:** The file is the first thing read in a new session, and a stale
+convention there is worse than no convention — the removed-packages note
+would have actively misled the next reader into thinking the cleanup hadn't
+happened.
+
+**Requested or incidental:** Incidental. Nobody asked for it; it is required
+maintenance following the two changes above, and this file's own rule makes an
+entry for editing it mandatory.
+
+**Verification status:** Prose only, no executable claims. The counts in it
+were taken from an actual test run (153 passing) and an actual directory
+listing (9 files in `tests/`), not estimated. Committed.

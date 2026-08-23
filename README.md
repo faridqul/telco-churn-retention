@@ -355,8 +355,12 @@ tests/
   test_artifact.py            # loads the committed .pkl and pins its prediction
   test_input_validation.py    # batch-input domain checks + API non-finite handling
   test_campaign_profit.py     # unit tests for the profit arithmetic
-pyproject.toml                # dependencies (managed with uv)
-.github/workflows/tests.yml   # CI: runs the test suite on every push and PR
+  test_check_model_environment.py  # unit tests for the CI version gate
+check_model_environment.py    # CI gate: fails the build if installed library versions
+                               # don't match the ones that trained the artifact
+pyproject.toml                # dependencies (managed with uv), split into runtime /
+                               # dev / notebook groups
+.github/workflows/tests.yml   # CI: version gate + test suite, on every push and PR
 
 verify_version_check.sh       # integration check: builds two throwaway venvs and
                                # verifies the version-drift warning actually fires
@@ -377,6 +381,18 @@ retention_campaign_targets.csv
 ```
 
 ## Running it
+
+**Installing:** dependencies are split by what you actually intend to do.
+```
+uv sync                        # serve or score: the runtime set, plus test tooling
+uv sync --group notebook       # additionally: re-train by running the notebook
+```
+The default set is deliberately small — 32 packages rather than 142 — because
+it is what a deployed container installs, and Jupyter, SHAP, matplotlib and
+seaborn are needed only to *produce* the model, never to *use* it. Splitting
+them out cuts the installed environment from roughly 1.4 GB to 675 MB. If an
+import fails while running the notebook, the `notebook` group is what's
+missing.
 
 **Batch scoring:**
 ```
@@ -470,7 +486,7 @@ consumers cannot drift into accepting different inputs.
 ```
 uv run pytest -q
 ```
-141 tests, ~4 s. They cover feature engineering edge cases, API
+153 tests, ~4 s. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.
@@ -505,10 +521,21 @@ scikit-learn/XGBoost/numpy/pandas versions that produced the pickle, and
 environment at startup. It warns rather than blocking, deliberately —
 neither library guarantees pickle compatibility across releases, but turning
 a possibly-harmless patch bump into a guaranteed outage is worse than
-surfacing it for a human to judge. A hard gate belongs in CI, checked against
-the artifact before deploy, not in the live service's boot path.
-`verify_version_check.sh` builds two throwaway virtualenvs and confirms the
-warning actually fires.
+surfacing it for a human to judge. `verify_version_check.sh` builds two
+throwaway virtualenvs and confirms that warning actually fires.
+
+That leniency is only defensible if something stricter runs before deploy, so
+the hard gate lives in CI: `check_model_environment.py` compares the same
+versions and **exits non-zero**, failing the build. The two checks differ
+deliberately in what they do with ignorance. At runtime, unreadable metadata
+or an untracked library is a shrug — the service keeps serving. In CI it is a
+failure, because there is no uptime to protect there, only the question of
+whether this environment matches the artifact, and "can't tell" is not a yes.
+The gate resolves versions through the same `config._current_library_versions()`
+the service uses rather than keeping its own list: a gate that checks something
+different from what production checks is worse than no gate. It runs before
+the test suite, so a version skew reports itself as a version problem instead
+of as a cryptic pinned-prediction failure in `test_artifact.py`.
 
 **Missing metadata is fatal.** If `model_metadata.json` is absent or
 unparseable, both consumers stop at startup with a message naming the file
