@@ -438,6 +438,8 @@ tests/
   test_input_validation.py    # batch-input domain checks + API non-finite handling
   test_campaign_profit.py     # unit tests for the profit arithmetic
   test_check_model_environment.py  # unit tests for the CI version gate
+  conftest.py                 # DummyModel + _FakeJoblib, shared by the API and
+                               # batch-script tests so they can't drift apart
 check_model_environment.py    # CI gate: fails the build if installed library versions
                                # don't match the ones that trained the artifact
 pyproject.toml                # dependencies (managed with uv), split into runtime /
@@ -549,12 +551,17 @@ curl -X POST http://127.0.0.1:8000/predict \
 
 ```json
 {
-  "churn_probability": 0.81,
+  "churn_probability": 0.7443000078201294,
   "target_for_retention": true,
-  "threshold_used": 0.40
+  "threshold_used": 0.4
 }
 ```
-*(illustrative — run it yourself to get a real prediction)*
+*(the real response for the payload above)* — the probability is reported
+unrounded on purpose. The decision is `churn_probability >= threshold_used`
+evaluated at full precision, and `telco_model.py` compares the same way, so
+rounding for display would let a response show `0.4 >= 0.4` next to `false`,
+and rounding before the comparison would flag customers the batch script
+skips.
 
 Invalid input is rejected with a `422` before the model is touched: an
 unknown category, a negative charge, or a non-finite number (`Infinity`,
@@ -568,7 +575,7 @@ consumers cannot drift into accepting different inputs.
 ```
 uv run pytest -q
 ```
-153 tests, ~4 s. They cover feature engineering edge cases, API
+162 tests, ~4 s. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.

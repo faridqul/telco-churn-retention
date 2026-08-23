@@ -2445,3 +2445,72 @@ moved the Logistic Regression row again — ROC-AUC 0.843903 → 0.843899, std
 0.018882 → 0.018893, accuracy 0.7758 → 0.7760, profit $26,200 → $26,220 — and
 the README was resynced to it, including a sentence that had claimed that row's
 profit never moves. Committed.
+
+---
+
+## 2026-08-23 — Corrections found while re-checking the item-12 work
+
+**Files touched:** `README.md`, `telco_customer_churn.ipynb` (cell 30)
+
+**What changed:** A review pass over the previous entry's work turned up four
+things, three of them mistakes I had made.
+
+*The README still said 153 tests.* The suite is 162. CLAUDE.md had been
+updated and the README had not.
+
+*`tests/conftest.py` was missing from the README's repo-structure listing,*
+despite being a new file that entry introduced.
+
+*An overstated claim in cell 30's comment.* I had written that comparing
+thresholds with `==` "breaks the moment either value is round-tripped through
+JSON". That is not true for the value actually in play: `np.arange(0.35, 0.45,
+0.01)` lands on exactly `0.4`, which survives a JSON round-trip unchanged, so
+the old `==` was never broken here. The underlying concern is real, but the
+accurate version is narrower and more interesting: across the 19 possible fine
+windows, 17 contain values that are *not* exactly their two-decimal form —
+`0.41` arrives as `0.41000000000000003` — and the current window is one of
+them. `0.40` simply happens to be one of the exact values. So the fragility is
+real but conditional on which threshold wins, and `.iloc[0]` on an empty match
+would raise IndexError rather than return a wrong row. The comment now says
+that, and notes that the `np.round()` added to the grid removes the problem at
+its source, leaving `np.isclose` as a second line rather than the only one.
+
+*The README's example API response was stale in format.* It showed
+`"churn_probability": 0.81` marked "illustrative", which implied a
+two-decimal response that the C3 fix no longer produces. It now shows the real
+response for the payload in the curl example directly above it
+(`0.7443000078201294`), with a sentence explaining why the value is unrounded
+— that the decision is evaluated at full precision and the batch script
+compares the same way.
+
+**Why:** The previous entry's work was large and much of it was reasoned about
+rather than executed. Asked to re-check it, I did, and these are what the check
+found.
+
+**Requested or incidental:** The re-check was requested. All four edits are
+corrections to my own prior work rather than new scope.
+
+**Verification status:** This pass also executed what the previous entry had
+only reasoned about, which is the more important outcome. The real notebook
+cell sources for 11, 12, 14, 15, 16, 17, 18 and 20 were compiled and run
+against the real dataset, and their numbers match the notebook's stored
+outputs exactly: cell 16 ROC-AUC 0.8356, cell 18 ROC-AUC 0.8381, cell 20 mean
+ROC-AUC 0.8198 with std 0.0207. That last one is the C14 check — it reproduces
+with `n_jobs=-1` where the stored output came from `n_jobs=3`, confirming the
+change is numerically neutral. The M8 property was then asserted directly on
+the live objects: `model_pipeline` and `model_pipeline_tuned` no longer share a
+preprocessor instance. Cell 26's regenerated grid was run against the saved
+out-of-fold predictions and produces the identical 11 values, the same 0.40
+threshold and the same $26,640 peak; cell 30's `np.isclose` lookup returns the
+same row. An AST scan confirms no bare `preprocessor` name is loaded anywhere
+in the notebook, which would have been a NameError now that cell 12 defines a
+function instead. Every published README figure was re-matched against the
+notebook's stored outputs. The batch script runs (15 of 50 flagged), the
+version gate passes, and the suite is 162 passing both in the development
+environment and in a from-scratch CI-minimal one.
+
+Still unexecuted: cells 22, 26, 30, 35 and 40 in a real top-to-bottom notebook
+run. Cells 26 and 30 were verified by executing their logic against saved
+predictions rather than in the notebook itself, and the regenerated sample CSV
+came from a script reproducing cell 40's sampling rather than from cell 40.
+Committed.
