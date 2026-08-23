@@ -6,8 +6,8 @@
   "cv_pr_auc_mean": 0.6642944952307156,
   "cv_pr_auc_std": 0.03743798228430483,
   "churn_rate_train": 0.2644230769230769,
-  "trained_at": "2026-08-23T15:44:40.081537+00:00",
-  "git_commit": "7c842fd36660c6fe275f058e5b4665b7ca5dc9db",
+  "trained_at": "2026-08-23T17:04:26.883711+00:00",
+  "git_commit": "e6ea2dcbb1944e898f5d66789ad800eb05f44a55",
   "feature_schema_version": "1.0",
   "hash": "e509e674fc08e00ab0cc0b9bdc61fb26128e65c24d272ab9f68a7271c59f043e",
   "library_versions": {

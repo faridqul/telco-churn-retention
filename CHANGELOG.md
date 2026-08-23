@@ -2587,3 +2587,63 @@ The unexecuted set is unchanged from the previous entry: notebook cells 22, 26,
 30, 35 and 40 have not been run inside a real top-to-bottom execution, though
 26 and 30 were verified by executing their logic against saved out-of-fold
 predictions. Committed.
+
+---
+
+## 2026-08-23 — Notebook re-executed: item-12's unexecuted cells confirmed
+
+**Files touched:** `README.md` (plus `model_metadata.json` and
+`telco_customer_churn.ipynb`, rewritten by the user's notebook run)
+
+**What changed:** The user re-ran the notebook, which is what the last three
+entries had been waiting on. Every cell item 12 changed but could not execute
+has now executed, and the results resolve the open question in those entries.
+
+`model_metadata.json` moved only in `trained_at` and `git_commit`. Everything
+that would indicate a real change — `threshold`, `cv_roc_auc_*`,
+`cv_pr_auc_*`, `dummy_customer_score`, `hash` — is unchanged, and
+`xgboost_churn_pipeline.pkl` is byte-identical to the committed one. That is
+the confirmation that `make_preprocessor()` did not alter the model: giving
+each pipeline its own ColumnTransformer produces exactly the artifact the
+shared one did, which is what the reasoning predicted and what could not be
+proven without a run.
+
+Three other item-12 changes are now confirmed the same way. Cells 26 and 30
+produced byte-identical output, so the rebuilt fine-threshold grid (inclusive
+stop, rounded to 2dp) and the `np.isclose` lookup both behave exactly as the
+code they replaced — threshold 0.40, peak $26,640, test profit $6,660.
+`simulated_new_customers.csv` shows no diff at all, which means cell 40's
+`X_test_raw.sample(...)` reproduced the 19-column file byte-for-byte; the
+regeneration script used earlier had matched the notebook exactly. Cell 20's
+`n_jobs=-1` produced no change either.
+
+The only figure that moved is the Logistic Regression row, for the third run
+running. ROC-AUC 0.843899 → 0.843901, std 0.018893 → 0.018884, accuracy
+0.7760 → 0.7758, profit $26,220 → $26,200. The README's table row and the
+inline three-model ROC-AUC list were updated. Nothing else needed touching,
+and that is worth recording: the footnote written two entries ago states this
+row's variability as *ranges* rather than as one run's values, and all three
+ranges still cover this run (ROC-AUC within 0.843891–0.843903, accuracy within
+0.7758–0.7867, profit within $26,200–$26,240). Stating it as a range instead
+of a point is why the prose did not go stale this time.
+
+**Why:** Post-execution verification, which this project's own checklist
+requires after any notebook re-run.
+
+**Requested or incidental:** The user reported the re-run; the checks and the
+README sync follow from it.
+
+**Verification status:** Executed and checked in order. Tests 162 passing, the
+version gate passes. The run was contiguous and in order (execution counts 40
+through 78, no gaps) but on an existing kernel rather than a fresh one, so it
+does not by itself prove a cold-start run — the specific risk that creates, a
+stale `preprocessor` variable surviving in the kernel and masking a missed
+reference, was already ruled out separately by an AST scan showing no bare
+`preprocessor` name is loaded anywhere in the notebook. Every figure the
+README publishes was re-matched against this run's stored outputs: the
+Results table, the model-comparison table, the sensitivity sweep, the
+calibration table, the threshold-precision and leakage tables, and the
+error-overlap table (correlations 0.964–0.980, 64.5% shared errors, Jaccard
+0.72–0.78, average-of-three profit $26,780) all agree. The SHAP section needs
+no recheck this time: the pickle is byte-identical, so the attributions cannot
+have moved. Committed.
