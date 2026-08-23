@@ -2954,3 +2954,86 @@ the `PermissionError` that motivated `--chmod`, the pinned
 `0.7443000078201294` response, and the 165-test count. The section headings
 were confirmed to be in the intended order with `grep -n '^## ' CLAUDE.md`.
 Not committed.
+
+---
+
+## 2026-08-24 — Fix a broken CI batch step and the docs command that shared its bug
+
+**Files touched:**
+- `.github/workflows/tests.yml` (the `Smoke test the batch scorer` step in the
+  `docker` job now copies an input CSV into the mounted directory first)
+- `README.md` (rewrote the Docker command block; added a paragraph explaining
+  what mounting `/data` does to the shipped sample)
+- `Dockerfile` (extended two comments — the usage header and the `/data`
+  block — to state the consequence of mounting an empty directory)
+- `CLAUDE.md` (added the same caveat to the one-line batch command in the
+  Docker section)
+
+**What changed:** The CI job added in the entry above had a genuine bug, found
+by running its shell steps verbatim against the built image after a push to
+GitHub turned out to be impossible from this environment. The batch step did:
+
+```
+mkdir -p out && chmod 777 out
+docker run --rm -v "$PWD/out:/data" telco-churn:ci python telco_model.py
+```
+
+`out/` is empty. Mounting it at `/data` shadows the sample
+`simulated_new_customers.csv` baked into the image, so `INPUT_PATH` pointed at
+a file that no longer existed and the step died with `FileNotFoundError:
+/data/simulated_new_customers.csv`. It now copies the repo's CSV into `out/`
+before running, which also makes the step test the realistic path — a user
+mounting a directory containing their own data — rather than relying on a file
+the mount hides.
+
+The same trap was in the documentation. The README, the Dockerfile header and
+`CLAUDE.md` all showed `docker run -v ./data:/data telco-churn python
+telco_model.py` as the batch command with no indication that `./data` must
+contain the input. The README block now shows three separate invocations (API;
+batch against the shipped sample with no mount; batch against your own CSV with
+a mount and `INPUT_PATH`) and spells out that the default input path is
+`/data/simulated_new_customers.csv`, so a file at that exact name needs no
+`-e` flag. The two code comments gained the corollary sentence.
+
+No behaviour changed in the image itself. The `/data` shadowing is correct and
+intended — you bring your own data — and it was already described accurately in
+the README's prose. What was wrong was the CI step and the copy-pasteable
+commands.
+
+**Why:** The previous entry recorded the `docker` job as "verified as valid
+YAML and as locally-equivalent commands, not as a green CI run". Attempting to
+push and discovering there are no credentials in this environment turned that
+caveat into a reason to close the gap a different way: running each of the
+job's four shell steps by hand against the image. The first three passed; the
+fourth did not. Had the push succeeded, this would have been a red CI run
+instead.
+
+**Requested or incidental:** Incidental, in the sense that you did not ask for
+it specifically — but it is a defect in work delivered in this same session, so
+it is a correction rather than new scope. It does not amend or contradict the
+previous entry; that entry's claim that the step was verified only as
+"locally-equivalent commands" was accurate, and this is what happened when they
+were actually executed.
+
+**Verification status:** Verified by execution. All four shell steps of the
+`docker` job were run verbatim against a freshly rebuilt image:
+
+- `Start the API` — the health-wait loop exits 0; container reports `healthy`.
+- `Smoke test /predict` — returns
+  `{"churn_probability":0.7443000078201294,"target_for_retention":true,"threshold_used":0.4}`,
+  both `grep` assertions pass.
+- `Unknown category must be rejected with 422` — returns 422.
+- `Smoke test the batch scorer` — now passes: `15 of 50 customers flagged`,
+  output written, decision column present.
+
+Additionally confirmed the bare no-mount run still works off the shipped
+sample (also `15 of 50`), and that the mounted run's
+`retention_campaign_targets.csv` remains byte-identical (`diff`) to a host run.
+Image rebuilt and re-measured at 570 MB; both build-time checks still print OK.
+`uv run pytest -q` → **165 passed**. Workflow YAML re-parsed: `test` 6 steps,
+`docker` 8 steps.
+
+The `docker` job still has **not** run on GitHub Actions. It cannot be pushed
+from this environment — there is no `gh` CLI, no git credential helper and no
+SSH key, so `git push` fails with `could not read Username for
+'https://github.com'`. Both commits from this session are local only.

@@ -11,7 +11,8 @@
 #
 #   docker build -t telco-churn .
 #   docker run -p 8000:8000 telco-churn                 # API (default CMD)
-#   docker run -v ./data:/data telco-churn python telco_model.py   # batch scorer
+#   docker run telco-churn python telco_model.py                    # batch, sample CSV
+#   docker run -v ./data:/data telco-churn python telco_model.py    # batch, your CSV
 #
 # The model is COPYed in, never trained here. xgboost_churn_pipeline.pkl and
 # model_metadata.json are committed and byte-reproducible, and training needs
@@ -141,7 +142,10 @@ COPY --chmod=0644 xgboost_churn_pipeline.pkl model_metadata.json ./
 #
 # The mount shadows the sample input copied in below, which is the intended
 # behaviour: you bring your own CSV, and the shipped one exists only so that
-# a bare `docker run` with no mount still demonstrates the batch path.
+# a bare `docker run` with no mount still demonstrates the batch path. The
+# corollary is that mounting an *empty* directory here leaves nothing to
+# score -- the mounted directory must contain the input, at
+# /data/simulated_new_customers.csv or wherever INPUT_PATH points.
 RUN install -d -o appuser -g appuser -m 0755 /data
 COPY --chmod=0644 --chown=appuser:appuser simulated_new_customers.csv /data/
 

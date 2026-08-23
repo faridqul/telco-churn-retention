@@ -207,7 +207,9 @@ number the README publishes. Check these, in order:
 ## Docker
 
 One image, both entrypoints. `CMD` is `uvicorn api:app`; batch scoring is
-`docker run -v ./data:/data telco-churn python telco_model.py`. Don't split
+`docker run -v ./data:/data telco-churn python telco_model.py` (that mount
+shadows the sample CSV baked into the image, so the mounted directory must
+contain the input). Don't split
 this into two images — `api.py` and `telco_model.py` have an identical
 dependency set, and the "both paths make the same decision" invariant above
 is exactly what two independently-built images would erode.

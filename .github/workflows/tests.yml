@@ -133,12 +133,19 @@ jobs:
                  "paymentmethod":"Electronic check","monthlycharges":85.5,"totalcharges":256.5}')
           [ "$code" = "422" ] || { echo "expected 422, got $code"; exit 1; }
 
-      # The batch path, through the same image. Covers the writable /data
-      # mount and the non-root user's ability to write into it -- a failure
-      # mode invisible to any test that runs as root.
+      # The batch path, through the same image, exercised the way a user
+      # actually runs it: mount a directory holding your own CSV. Covers the
+      # writable /data mount and the non-root user's ability to write into it
+      # -- a failure mode invisible to any test that runs as root.
+      #
+      # The input has to be copied in. Mounting a host directory at /data
+      # shadows the sample CSV baked into the image, which is intended (you
+      # bring your own data), but it does mean an empty mount has nothing to
+      # score. Getting that wrong is what this step originally did.
       - name: Smoke test the batch scorer
         run: |
           mkdir -p out && chmod 777 out
+          cp simulated_new_customers.csv out/
           docker run --rm -v "$PWD/out:/data" telco-churn:ci python telco_model.py
           test -s out/retention_campaign_targets.csv || { echo "no output written"; exit 1; }
           head -1 out/retention_campaign_targets.csv | grep -q 'Target_For_Retention' \

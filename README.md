@@ -608,9 +608,23 @@ consumers cannot drift into accepting different inputs.
 **Docker:**
 ```
 docker build -t telco-churn .
-docker run -p 8000:8000 telco-churn                            # API
-docker run -v ./data:/data telco-churn python telco_model.py   # batch scoring
+
+# API
+docker run -p 8000:8000 telco-churn
+
+# Batch scoring, against the sample CSV shipped in the image
+docker run telco-churn python telco_model.py
+
+# Batch scoring, against your own CSV: put it in ./data and name it
+docker run -v ./data:/data -e INPUT_PATH=/data/new_customers.csv \
+  telco-churn python telco_model.py
 ```
+Mounting a directory at `/data` shadows the sample CSV baked into the image —
+intended, since you are supplying your own data, but it does mean an empty
+mount has nothing to score. `INPUT_PATH` defaults to
+`/data/simulated_new_customers.csv`, so a file at that exact name needs no
+`-e` flag. Output lands at `/data/retention_campaign_targets.csv` unless
+`OUTPUT_PATH` says otherwise.
 One image serves both entrypoints, on purpose. The API and the batch script
 have an identical dependency set and share `config.py` and
 `feature_engineering_telco.py`, and the invariant that matters most here is
