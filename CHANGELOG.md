@@ -1908,3 +1908,55 @@ they need a full notebook run — so their correctness rests on the
 expression-level equivalence checks above rather than on observed output.
 `xgboost_churn_pipeline.pkl` and `model_metadata.json` are untouched.
 Committed.
+
+---
+
+## 2026-08-23 — Remove documentation cross-references from code comments
+
+**Files touched:**
+- `telco_customer_churn.ipynb` (cells 35, 46, 49)
+- `tests/test_integration.py`
+- `tests/test_campaign_profit.py`
+
+**What changed:** Comments and docstrings that pointed at other documents —
+`AUDIT.md` finding codes like M6 and M7, "roadmap item 6", and references to
+the README — were rewritten to explain themselves instead.
+
+Twelve places in total. In the notebook: cell 35 dropped a parenthetical
+about the README's Results table; cell 46's opening comment and closing
+printout stopped attributing the information-ceiling reading to the README
+and simply state it; cell 49 had the heaviest concentration, with six
+mentions of "M6" and "roadmap item 6" across its header comment, a section
+divider, and two printed lines. Its header was also condensed, and the two
+questions it answers are now labelled PRECISION and BIAS rather than by
+finding codes. In the tests, `test_integration.py`'s seed-independence
+docstring no longer opens with "Locks in the M7 fix", and
+`test_campaign_profit.py` no longer describes the $6,660 figure as belonging
+to the README.
+
+The substance is unchanged in every case — each comment still explains the
+same thing, in some cases more briefly. What is gone is the requirement to go
+and read a second file to understand the first.
+
+**Why:** You asked for it. The reasoning holds up: a code comment saying
+"see AUDIT.md M6" is useless to anyone without that file, and `AUDIT.md` in
+particular is gitignored, so a reader who clones this repository would find
+references to a document that does not exist for them. A comment should carry
+its own explanation.
+
+**Requested or incidental:** Requested. One thing beyond the literal ask:
+cell 49's header comment was shortened while being de-referenced, since it
+had grown to nineteen lines.
+
+**Verification status:** After the edits, the notebook and all Python files
+were re-scanned for the same patterns (`AUDIT`, `M<digit>`, `C1<digit>`,
+`README`, `CHANGELOG`, `CLAUDE.md`, `roadmap`) and come back clean. Cells 46
+and 49 were executed from the notebook source and produce unchanged numbers —
+cell 49 still reports 0.404 ± 0.036 per-fold, the 0.38/0.43 leakage split and
+the [−0.19, +0.18] interval; cell 46 still reports 65.2% shared errors. Test
+suite: 141 passing.
+
+A note on scope: `CLAUDE.md` and this file still reference `AUDIT.md` finding
+codes. That is deliberate — they are documentation about the project's
+history, where a cross-reference is the point, rather than code that has to
+stand on its own. Only comments inside code were changed.

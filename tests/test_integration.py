@@ -188,11 +188,10 @@ def test_pipeline_handles_missing_totalcharges(fitted_pipeline):
 
 @pytest.mark.parametrize("seed", [0, 1, 7, 42, 1234])
 def test_fixture_missing_totalcharges_is_seed_independent(seed):
-    """Locks in the M7 fix. The fixture used to depend on chance: 21 of the
-    first 40 seeds produced no missing-totalcharges rows at all, so changing
-    the seed had a coin-flip chance of turning the suite red for reasons
-    unrelated to the change under test. Now the count is exact for every
-    seed, and this test is what stops the randomness being reintroduced.
+    """The fixture used to draw tenure randomly, so whether any missing
+    totalcharges rows appeared was luck -- 21 of the first 40 seeds produced
+    none, and changing the seed could turn the suite red for unrelated
+    reasons. The rows are forced now; this test stops that being undone.
     """
     X, y = _make_synthetic_customers(seed=seed)
     assert X["totalcharges"].isna().sum() == N_ZERO_TENURE_ROWS

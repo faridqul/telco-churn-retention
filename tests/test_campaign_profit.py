@@ -1,11 +1,10 @@
-"""Tests for campaign_profit.py -- the profit arithmetic every threshold
-decision in this project rests on.
+"""Tests for campaign_profit.py -- the arithmetic every threshold decision
+rests on.
 
-This formula used to be retyped in five places in the notebook, in three
-different shapes (a pandas column, a scalar, a loop body). The risk that
-creates is not that the arithmetic is hard, it is that one copy drifts from
-the others and the number you tune on stops matching the number you report.
-These tests pin the behaviour so the single shared copy can be trusted.
+The formula used to be retyped in seven notebook cells, in three shapes: a
+pandas column, a scalar, a loop body. The risk was never that the arithmetic
+is hard -- it is that one copy drifts and the number you tune on stops
+matching the number you report. These tests pin the shared copy.
 
 Run with: pytest tests/test_campaign_profit.py -v
 """
@@ -39,8 +38,8 @@ def test_matches_hand_computed_value():
 
 
 def test_reproduces_the_published_test_set_profit():
-    """The README's $6,660 comes from TP=256, FP=179 at threshold 0.40. If
-    this ever stops matching, either the formula or the README moved."""
+    """The published test-set result: TP=256, FP=179 at threshold 0.40 earns
+    $6,660. Pinned so the formula and the reported figure can't drift apart."""
     assert campaign_profit(256, 179, **ECON) == pytest.approx(6660.0)
 
 
