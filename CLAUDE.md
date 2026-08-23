@@ -207,20 +207,20 @@ number the README publishes. Check these, in order:
 ## Docker
 
 One image, both entrypoints. `CMD` is `uvicorn api:app`; batch scoring is
-`docker run -v "$PWD/data:/data" telco-churn python telco_model.py` (that mount
-shadows the sample CSV baked into the image, so the mounted directory must
-contain the input). Don't split
-this into two images — `api.py` and `telco_model.py` have an identical
-dependency set, and the "both paths make the same decision" invariant above
-is exactly what two independently-built images would erode.
+`docker run -v "$PWD/data:/data" telco-churn python telco_model.py` — that
+mount shadows the sample CSV baked into the image, so the mounted directory
+must contain the input. Don't split this into two images: `api.py` and
+`telco_model.py` have an identical dependency set, and the "both paths make
+the same decision" invariant above is exactly what two independently-built
+images would erode.
 
 - **Never train in the build.** The artifact is committed and
   byte-reproducible; it is `COPY`d in. Training needs the `notebook` group,
   which the image deliberately doesn't install.
 - **`uv sync --frozen --no-dev`** — 24 installed distributions on Linux, vs 32
   for a plain `uv sync`. `--no-dev` verified safe by import audit: no runtime
-  module imports pytest or httpx. `--frozen` makes
-  lockfile drift a build failure, matching CI.
+  module imports pytest or httpx. `--frozen` makes lockfile drift a build
+  failure, matching CI.
 - **The nvidia trim is deliberate and load-bearing.** `xgboost` hard-depends
   on `nvidia-nccl-cu13` on Linux — 288 MB of GPU training libraries a CPU
   inference container never calls. The builder stage deletes the payload,
@@ -242,7 +242,9 @@ is exactly what two independently-built images would erode.
   version gate's third home; per AUDIT.md item 4, pinning from `uv.lock` is
   what demotes `validate_environment_versions()` from primary control to
   cheap assertion.
-- **`/app` is read-only; `/data` is the only writable path.** `INPUT_PATH` and
+- **`/app` is read-only to `appuser`; `/data` is the only writable path.**
+  (`/app` is root-owned, dir 0755 and files 0644 — not a read-only mount, so
+  say "to appuser" rather than "read-only" flatly.) `INPUT_PATH` and
   `OUTPUT_PATH` (new in `telco_model.py`, mirroring `config.py`'s `MODEL_PATH`
   handling) default to `/data` **inside the image only** — the module defaults
   remain the repo-relative filenames. Mounting a host dir at `/data` shadows
@@ -251,6 +253,11 @@ is exactly what two independently-built images would erode.
   imports it; the threshold its formula chose is already in
   `model_metadata.json`. If an endpoint ever needs `break_even_threshold()`,
   add it to the `COPY` line.
+- **The `HEALTHCHECK` asserts `model_loaded`, not just a 200.** `/health`
+  returns 200 unconditionally — `model_loaded` is a field in the body — so a
+  status-only probe would call a model-less process healthy, which is the
+  state `/predict` answers with a 503. Don't simplify it back to a status
+  check.
 - CI's `docker` job runs **parallel to** `test`, not after it. It builds the
   image and smoke-tests the running container: `/predict` pinned at
   `0.7443000078201294`, an unknown category rejected with 422, and the batch

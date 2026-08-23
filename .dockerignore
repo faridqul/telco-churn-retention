@@ -26,9 +26,11 @@ telco_customer_churn.ipynb
 # in it to run them with.
 tests/
 
-# Docs and local notes.
+# Docs and local notes. CLAUDE.md is assistant guidance for working on this
+# repo -- it has no business in a build context, let alone an image.
 README.md
 CHANGELOG.md
+CLAUDE.md
 AUDIT.md
 LICENSE
 

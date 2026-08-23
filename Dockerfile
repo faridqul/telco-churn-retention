@@ -196,12 +196,20 @@ PY
 EXPOSE 8000
 
 # No curl in the slim base, and adding one for a healthcheck is not worth the
-# extra surface. /health reports model_loaded, which is only True once the
-# lifespan handler has finished loading the pickle -- so this distinguishes
-# "process is up" from "ready to answer", and start-period covers the load.
+# extra surface.
+#
+# Checks the model_loaded field, not just the status code. /health returns 200
+# unconditionally -- model_loaded is a value in the body, so a status-only
+# probe reports healthy for a process that is up but holding no model, which
+# is the state /predict answers with a 503. Uvicorn does not accept
+# connections until the lifespan handler has finished unpickling, so in
+# practice that window shows up as connection refused rather than a 200 with
+# model_loaded false; asserting the field costs nothing and makes the check
+# mean what it says. start-period covers the load.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD python -c "import urllib.request, sys; \
-sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+    CMD python -c "import json, urllib.request, sys; \
+r = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4); \
+sys.exit(0 if r.status == 200 and json.load(r).get('model_loaded') is True else 1)"
 
 # 0.0.0.0 so the port is reachable from outside the container. No --reload:
 # that is a development convenience and it would double memory by running a

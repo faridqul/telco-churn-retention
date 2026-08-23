@@ -3174,3 +3174,84 @@ batch output and the `dummy_customer_score` reproduction all re-verified.
 
 The `docker` CI job still has not run on GitHub Actions — this environment has
 no push credentials. All commits from this session remain local.
+
+---
+
+## 2026-08-24 — Second review pass: healthcheck asserted the wrong thing, CLAUDE.md left in the build context
+
+**Files touched:**
+- `Dockerfile` (the `HEALTHCHECK` now checks the `model_loaded` field, not just
+  the HTTP status; its comment rewritten to match)
+- `.dockerignore` (added `CLAUDE.md`)
+- `CLAUDE.md` (added a `HEALTHCHECK` bullet; tightened the `/app` read-only
+  claim; fixed two line wraps left ragged by the previous pass's edits)
+
+**What changed:** A second review pass over the Docker work, after the first
+one. Two substantive findings and some tidying.
+
+*The healthcheck did not check what its comment claimed.* The comment said
+`/health` "reports model_loaded, which is only True once the lifespan handler
+has finished loading the pickle — so this distinguishes 'process is up' from
+'ready to answer'". The probe itself only asserted
+`urlopen(...).status == 200`. Reading `api.py:114`, `/health` returns HTTP 200
+unconditionally — `model_loaded` is a value in the response *body*, never in
+the status — so the probe would have reported a model-less process as healthy.
+That is exactly the state `/predict` answers with a 503, i.e. the one state a
+healthcheck most needs to catch.
+
+In practice the window is very narrow: uvicorn does not accept connections
+until the lifespan handler finishes, so "up but no model" shows as connection
+refused rather than a 200, and a lifespan exception kills the container
+outright. So this was a wrong justification more than an outage waiting to
+happen. Fixed by making the probe true to its comment rather than by softening
+the comment: it now parses the JSON and requires `model_loaded is True`.
+Verified the container still reaches `healthy` (probe exit code 0).
+
+*`CLAUDE.md` was being sent to the Docker daemon on every build.* The
+`.dockerignore` excludes `README.md`, `CHANGELOG.md`, `AUDIT.md` and `LICENSE`
+but I missed `CLAUDE.md`, which is assistant guidance for working on this repo
+and has no business in a build context. Found by building a throwaway busybox
+stage that does `COPY . /ctx` and listing the result — which is also how the
+rest of `.dockerignore` got confirmed working: the context is **648 KB**, with
+`.venv`, `.git`, `tests/` and the notebook all correctly excluded.
+
+*Precision fixes in `CLAUDE.md`.* The bullet said "`/app` is read-only". `/app`
+is not a read-only mount — it is root-owned with a 0755 directory and 0644
+files, and the container runs as `appuser`, so it is read-only *to that user*.
+Reworded, since this is the same class of imprecision the previous pass
+corrected in the Dockerfile. A new bullet records the healthcheck decision so
+nobody simplifies it back to a status check. Two line wraps left ragged by the
+previous pass's string edits were rejoined.
+
+**Why:** Requested — you asked me to check the work again.
+
+**Requested or incidental:** Requested. Nothing here expands scope beyond
+reviewing and correcting this session's Docker work.
+
+**Verification status:** Verified by execution, on a fresh `--no-cache` build:
+
+- Build passes both build-time checks:
+  `OK: installed library versions match model_metadata.json.` and
+  `OK: artifact loads and reproduces dummy_customer_score (0.5699995160102844)`.
+- Container reaches `healthy` under the stricter probe; inspected
+  `.State.Health.Log` shows `exit=0`.
+- Image 570 MB; **24** installed distributions counted inside the running
+  image; running user `appuser`.
+- `/predict` returns `0.7443000078201294`; unknown category → 422.
+- Batch scorer: bare run `15 of 50`; mounted run byte-identical (`diff`) to a
+  host run.
+- `docker stop` completes in ~650 ms, so uvicorn handles SIGTERM as PID 1 and
+  no init/tini wrapper is needed — checked because a process that ignores
+  SIGTERM would silently cost 10 s on every deploy.
+- Build context inspected directly: 648 KB, `CLAUDE.md` now absent.
+- The pre-existing `test` job in `.github/workflows/tests.yml` diffed against
+  its state at commit `0d21750` and confirmed **byte-identical** — this
+  session's workflow change is purely additive.
+- Host file modes checked with `stat`: exactly three copied sources
+  (`api.py`, `telco_model.py`, `config.py`) are 0600, so the "several" in the
+  `--chmod` rationale is accurate.
+- `uv run pytest -q` → **166 passed**.
+
+No correction to any earlier entry is needed from this pass. The `docker` CI
+job still has not run on GitHub Actions; this environment has no push
+credentials and all commits remain local.
