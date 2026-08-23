@@ -3037,3 +3037,140 @@ The `docker` job still has **not** run on GitHub Actions. It cannot be pushed
 from this environment — there is no `gh` CLI, no git credential helper and no
 SSH key, so `git push` fails with `could not read Username for
 'https://github.com'`. Both commits from this session are local only.
+
+---
+
+## 2026-08-24 — Self-review of the Docker work: one real test bug and eight inaccuracies
+
+**Files touched:**
+- `tests/test_telco_model.py` (rewrote the `restore_telco_model` fixture;
+  added `import os`; added a regression guard test at the end of the file)
+- `Dockerfile` (corrected three comments; made the usage examples portable)
+- `README.md` (fixed a paragraph break, a package count, a stale test-file
+  count, the test total, a line wrap, and the mount command)
+- `CLAUDE.md` (corrected the package count, the test total, and the mount
+  command)
+- `.github/workflows/tests.yml` (corrected the Buildx comment; the health-wait
+  loop now bails out if the container stops running)
+
+**What changed:** You asked me to check the Docker work for mistakes. I found
+one real bug and a set of inaccurate claims. Listing them all, because several
+were numbers I had asserted confidently.
+
+*The real bug — a silent test-isolation leak.* The `restore_telco_model`
+fixture added earlier today was supposed to reload `telco_model` after a test
+had overridden `INPUT_PATH`/`OUTPUT_PATH`, so the module didn't keep the
+override. It did the opposite. pytest finalizes fixtures in reverse
+instantiation order, so this fixture's teardown ran *before* `monkeypatch`
+undid the environment variables — meaning the reload re-read the still-set
+overrides and left `telco_model.INPUT_PATH` pointing at a pytest tmp directory
+for the remainder of the session. Proved by adding a throwaway probe test
+after the suite: `LEAKED: /tmp/pytest-of-yaponsk/.../mounted_input.csv`.
+
+Nothing failed because of it, and that is the uncomfortable part: the fixture
+was green only because the three tests using it happen to be the last in the
+file, so nothing ran afterwards to observe the corrupted module. That is
+precisely the "precondition holds by luck" pattern `AUDIT.md` M7 recorded
+elsewhere in this repo, reintroduced by me in the same session.
+
+The fixture now snapshots the two variables itself and restores them before
+reloading, which makes it correct regardless of fixture or test ordering. A
+permanent regression guard was added as the last test in the file — pytest
+runs tests within a module in definition order, so it deterministically
+observes what the environment tests left behind. It compares against a fresh
+`os.environ.get` resolution rather than hardcoded literals, so it stays valid
+if those variables are set in the ambient environment. Verified to actually
+catch the bug: reinstating the old teardown makes it fail, restoring the fix
+makes it pass.
+
+*Wrong package counts.* I reported the image as shipping "26 packages instead
+of 34". Both numbers were wrong. They came from counting lines of
+`uv export`, which lists every resolution entry including ones whose
+environment markers exclude them on Linux — `colorama` and `tzdata` among
+them. Counting installed distributions inside the built image gives **24**,
+and evaluating markers for Linux gives **32** for a plain `uv sync`. So the
+correct statement is 32 → 24, and the `dev` group adds eight distributions:
+pytest, httpx, certifi, httpcore, iniconfig, packaging, pluggy and pygments.
+Worth noting the repo's pre-existing README claim of "32 packages" for
+`uv sync` was right all along; my 34 contradicted it and I did not notice.
+
+*A stale size estimate in the Dockerfile.* The nvidia-trim comment still said
+the trim takes the image "from ~900 MB to ~610 MB" — my estimate from before I
+measured anything. Every other file had been updated to the measured
+858 MB → 570 MB; this comment had not. Now corrected, and it names the method
+(`du -sx /` inside both images).
+
+*A wrong permissions claim.* A Dockerfile comment said "/app is owned by root
+at mode 0644". A directory at 0644 would not be traversable and the image
+would not work. `ls -la` inside the container shows `/app` is `drwxr-xr-x`
+(0755) and the files within it are 0644. Reworded to say that.
+
+*A markdown paragraph break.* The new README Docker section ran the
+`OUTPUT_PATH` sentence straight into the following paragraph with no blank
+line, so the two would render as one block. Fixed.
+
+*A command I documented but never ran.* All three docs showed
+`docker run -v ./data:/data …`. I had only ever tested with an absolute path.
+Relative bind-mount sources require Docker 23 or newer, so the documented
+command would fail on older daemons with a confusing error. I confirmed
+`./data` does work here (Docker 29), then switched all three to
+`-v "$PWD/data:/data"`, which works everywhere, and noted why in the README.
+
+*A wrong justification in CI.* The comment on the `Set up Buildx` step said it
+was needed "for the cache mount on uv's download cache and for COPY --chmod".
+Those work under plain BuildKit. Buildx is required because the default docker
+driver cannot export a `type=gha` cache. Comment corrected to say that.
+
+*A slow failure mode in CI.* If the container crashed at startup, the
+health-wait loop would spin for the full 90-second timeout before failing,
+reporting a timeout rather than a crash. It now checks `.State.Running` each
+iteration and exits immediately with the container logs.
+
+*A stale count I did not introduce.* The README said "Three of the seven files
+are deliberately not mocked". There are nine `test_*.py` files. This predates
+this session's work, but it sits four lines from the test total I had just
+updated, so leaving a known-wrong number there would have been worse than
+fixing it. Changed to "nine test files".
+
+*Test total.* 165 → 166 with the regression guard, updated in both `README.md`
+and `CLAUDE.md`.
+
+**Why:** Requested — you asked me to check the work for mistakes and fix them.
+
+**Requested or incidental:** The review and its fixes are requested. Two items
+inside it are incidental and flagged as such above: the README "seven files"
+correction, which is pre-existing drift rather than my error, and the CI
+`.State.Running` check, which is a robustness improvement rather than a defect
+fix.
+
+**Correction to earlier entries:** the entry titled "Dockerize: one
+self-verifying image..." states the image "ships 26 packages instead of 34".
+That is wrong; the correct figures are 24 installed distributions versus 32.
+Per this file's rules the earlier entry is left exactly as written and this
+paragraph is the correction. No other factual claim in the two earlier entries
+was found to be wrong on re-checking — the 858/570 MB measurements, the
+288 MB trim, the pinned `0.7443000078201294` response, the byte-identical
+batch output and the `dummy_customer_score` reproduction all re-verified.
+
+**Verification status:** Verified by execution.
+
+- `uv run pytest -q` → **166 passed**.
+- The leak was demonstrated with a temporary probe test before the fix
+  (1 failed) and confirmed gone after (9 passed in that file).
+- The new regression guard was verified to catch the bug it guards against, by
+  temporarily reinstating the buggy teardown: guard fails; restore the fix:
+  guard passes. The temporary files were removed.
+- Package counts measured two ways: `importlib.metadata.distributions()` inside
+  the running image (24), and `uv export` with environment markers evaluated
+  for Linux (24 runtime-only, 32 with dev).
+- Permissions read from `ls -la /app` and `ls -la /data` inside the container.
+- `-v ./data:/data` confirmed working on Docker 29 before being replaced with
+  the portable form.
+- `find … -maxdepth` after other predicates was checked for the GNU warning it
+  sometimes emits; it does not warn here, so the trim step was left as is.
+- Workflow YAML re-parsed: `test` 6 steps, `docker` 8 steps.
+- Image rebuilt, still 570 MB, both build-time checks still print OK; a final
+  `--no-cache` build was run to confirm nothing depended on a warm cache.
+
+The `docker` CI job still has not run on GitHub Actions — this environment has
+no push credentials. All commits from this session remain local.

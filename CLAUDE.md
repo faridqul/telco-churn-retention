@@ -34,7 +34,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. Also runs as a `docker build` step. |
 | `Dockerfile` | Production image. One image, both entrypoints (`uvicorn api:app` by default, `python telco_model.py` for batch). Multi-stage, non-root, `uv sync --no-dev`. Verifies itself at build time — see the Docker section below. |
 | `.dockerignore` | Keeps the local `.venv` (1.2 GB) and the notebook out of the build context. Without it every build uploads both to the daemon. |
-| `tests/` | 165 tests, a few seconds. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
+| `tests/` | 166 tests, a few seconds. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
@@ -207,7 +207,7 @@ number the README publishes. Check these, in order:
 ## Docker
 
 One image, both entrypoints. `CMD` is `uvicorn api:app`; batch scoring is
-`docker run -v ./data:/data telco-churn python telco_model.py` (that mount
+`docker run -v "$PWD/data:/data" telco-churn python telco_model.py` (that mount
 shadows the sample CSV baked into the image, so the mounted directory must
 contain the input). Don't split
 this into two images — `api.py` and `telco_model.py` have an identical
@@ -217,8 +217,9 @@ is exactly what two independently-built images would erode.
 - **Never train in the build.** The artifact is committed and
   byte-reproducible; it is `COPY`d in. Training needs the `notebook` group,
   which the image deliberately doesn't install.
-- **`uv sync --frozen --no-dev`** — 26 packages. `--no-dev` verified safe by
-  import audit: no runtime module imports pytest or httpx. `--frozen` makes
+- **`uv sync --frozen --no-dev`** — 24 installed distributions on Linux, vs 32
+  for a plain `uv sync`. `--no-dev` verified safe by import audit: no runtime
+  module imports pytest or httpx. `--frozen` makes
   lockfile drift a build failure, matching CI.
 - **The nvidia trim is deliberate and load-bearing.** `xgboost` hard-depends
   on `nvidia-nccl-cu13` on Linux — 288 MB of GPU training libraries a CPU

@@ -9,6 +9,7 @@ Run with: pytest tests/test_telco_model.py -v
 """
 
 import importlib
+import os
 
 import numpy as np
 import pandas as pd
@@ -129,12 +130,28 @@ def _reload_telco_model():
     return importlib.reload(telco_model)
 
 
-@pytest.fixture(autouse=False)
+@pytest.fixture
 def restore_telco_model():
-    """Reload once more on the way out, so a test that changed the
-    environment doesn't leave the imported module holding overridden paths
-    for every test that runs after it."""
+    """Restore the environment and then the imported module, so a test that
+    overrode either path doesn't leave the module holding it for everything
+    that runs afterwards.
+
+    Deliberately snapshots the two variables itself instead of leaving that
+    to monkeypatch. pytest finalizes fixtures in reverse instantiation order,
+    so this teardown runs *before* monkeypatch's undo -- reloading at that
+    point re-reads the still-overridden environment and leaks the test's tmp
+    paths into the module. That is not hypothetical: it is what the first
+    version of this fixture did, and the suite stayed green only because
+    these tests happen to run last. Restoring here first makes the fixture
+    correct regardless of fixture or test ordering.
+    """
+    saved = {name: os.environ.get(name) for name in ("INPUT_PATH", "OUTPUT_PATH")}
     yield
+    for name, value in saved.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
     _reload_telco_model()
 
 
@@ -186,3 +203,25 @@ def test_main_scores_through_environment_provided_paths(
 
     assert output_path.exists()
     assert len(pd.read_csv(output_path)) == 1
+
+
+def test_env_overrides_do_not_leak_into_later_tests():
+    """Guard against a regression that was real and silent.
+
+    An earlier version of `restore_telco_model` reloaded the module before
+    monkeypatch had undone the environment, so `telco_model.INPUT_PATH` kept
+    pointing at a pytest tmp directory for the rest of the session. Nothing
+    failed, because the tests above happen to be the last in this file --
+    the same "holds by luck" pattern AUDIT.md M7 flagged elsewhere in this
+    repo.
+
+    Defined last on purpose: pytest runs tests within a module in definition
+    order, so this observes the state the environment tests above left
+    behind. Compares against a fresh resolution rather than the literals, so
+    it stays correct if the variables happen to be set in the ambient
+    environment.
+    """
+    assert telco_model.INPUT_PATH == os.environ.get(
+        "INPUT_PATH", "simulated_new_customers.csv")
+    assert telco_model.OUTPUT_PATH == os.environ.get(
+        "OUTPUT_PATH", "retention_campaign_targets.csv")

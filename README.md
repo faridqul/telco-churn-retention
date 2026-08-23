@@ -616,7 +616,7 @@ docker run -p 8000:8000 telco-churn
 docker run telco-churn python telco_model.py
 
 # Batch scoring, against your own CSV: put it in ./data and name it
-docker run -v ./data:/data -e INPUT_PATH=/data/new_customers.csv \
+docker run -v "$PWD/data:/data" -e INPUT_PATH=/data/new_customers.csv \
   telco-churn python telco_model.py
 ```
 Mounting a directory at `/data` shadows the sample CSV baked into the image —
@@ -624,7 +624,10 @@ intended, since you are supplying your own data, but it does mean an empty
 mount has nothing to score. `INPUT_PATH` defaults to
 `/data/simulated_new_customers.csv`, so a file at that exact name needs no
 `-e` flag. Output lands at `/data/retention_campaign_targets.csv` unless
-`OUTPUT_PATH` says otherwise.
+`OUTPUT_PATH` says otherwise. (`-v "$PWD/data:/data"` rather than
+`-v ./data:/data` only for portability — relative bind sources need Docker
+23 or newer.)
+
 One image serves both entrypoints, on purpose. The API and the batch script
 have an identical dependency set and share `config.py` and
 `feature_engineering_telco.py`, and the invariant that matters most here is
@@ -662,8 +665,9 @@ the fix.
 
 **Size.** 570 MB. Dependencies come from the runtime group plus `--no-dev`, so
 neither the training stack (jupyter, matplotlib, seaborn, shap, kagglehub,
-scipy) nor the test runner ships — 26 packages. The single largest remaining
-item was not a project dependency at all: `xgboost` hard-depends on
+scipy) nor the test runner ships — 24 installed distributions, against the 32
+that `uv sync` gives a developer. The single largest remaining item was not a
+project dependency at all: `xgboost` hard-depends on
 `nvidia-nccl-cu13` on Linux, 288 MB of GPU distributed-training libraries a
 CPU inference container never calls. Removing that payload in the builder
 stage takes the image from 858 MB to 570 MB. It is done there rather than by
@@ -686,12 +690,12 @@ a bare `docker run` still demonstrates the batch path.
 ```
 uv run pytest -q
 ```
-165 tests. They cover feature engineering edge cases, API
+166 tests. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.
 
-Three of the seven files are deliberately not mocked:
+Three of the nine test files are deliberately not mocked:
 
 - `test_integration.py` fits the real preprocessing pipeline +
   `XGBClassifier` on a small synthetic sample, so the actual

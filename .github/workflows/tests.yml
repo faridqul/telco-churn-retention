@@ -67,9 +67,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # BuildKit, for the cache mount on uv's download cache and for
-      # COPY --chmod. gha caching keeps the dependency layer warm between
-      # runs, which is the expensive one -- xgboost and scikit-learn.
+      # Required for the type=gha cache below -- the default docker driver
+      # cannot export a registry/gha cache, only buildx's container driver
+      # can. That cache keeps the dependency layer warm between runs, which
+      # is the expensive one: xgboost and scikit-learn.
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -91,6 +92,9 @@ jobs:
         run: |
           docker run -d --name telco-churn-ci -p 8000:8000 telco-churn:ci
           timeout 90 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" telco-churn-ci)" = healthy ]; do
+            if [ "$(docker inspect -f "{{.State.Running}}" telco-churn-ci)" != true ]; then
+              echo "container is no longer running"; docker logs telco-churn-ci; exit 1
+            fi
             if [ "$(docker inspect -f "{{.State.Health.Status}}" telco-churn-ci)" = unhealthy ]; then
               echo "container reported unhealthy"; docker logs telco-churn-ci; exit 1
             fi

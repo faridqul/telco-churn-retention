@@ -10,9 +10,9 @@
 # while creating exactly the divergence that invariant exists to prevent.
 #
 #   docker build -t telco-churn .
-#   docker run -p 8000:8000 telco-churn                 # API (default CMD)
-#   docker run telco-churn python telco_model.py                    # batch, sample CSV
-#   docker run -v ./data:/data telco-churn python telco_model.py    # batch, your CSV
+#   docker run -p 8000:8000 telco-churn                  # API (default CMD)
+#   docker run telco-churn python telco_model.py         # batch, shipped sample CSV
+#   docker run -v "$PWD/data:/data" telco-churn python telco_model.py   # batch, your CSV
 #
 # The model is COPYed in, never trained here. xgboost_churn_pipeline.pkl and
 # model_metadata.json are committed and byte-reproducible, and training needs
@@ -55,18 +55,19 @@ COPY pyproject.toml uv.lock ./
 # image whose contents differ from the committed lockfile would defeat the
 # point of pinning them.
 #
-# --no-dev drops the `dev` group (pytest, httpx: 34 packages -> 26). Verified
-# by import audit: no runtime module -- api.py, telco_model.py, config.py,
-# feature_engineering_telco.py, check_model_environment.py -- imports either.
-# A production image has no business shipping a test runner.
+# --no-dev drops the `dev` group -- pytest and httpx plus certifi, httpcore,
+# iniconfig, packaging, pluggy and pygments, so 32 distributions become 24 on
+# Linux. Verified by import audit: no runtime module -- api.py, telco_model.py,
+# config.py, feature_engineering_telco.py, check_model_environment.py --
+# imports either. A production image has no business shipping a test runner.
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project
 
 # xgboost declares nvidia-nccl-cu13 as a hard dependency on Linux. It is
 # 288 MB -- larger than xgboost, pandas and scikit-learn combined -- and it
 # exists purely for GPU-distributed *training*, which a CPU inference
-# container never reaches. Dropping the payload takes the image from ~900 MB
-# to ~610 MB.
+# container never reaches. Dropping the payload takes the image from 858 MB to
+# 570 MB, measured with `du -sx /` inside both images.
 #
 # Done here rather than by switching to the `xgboost-cpu` distribution on
 # purpose: check_model_environment.py resolves versions via
@@ -133,12 +134,12 @@ COPY --chmod=0644 check_model_environment.py ./
 COPY --chmod=0644 xgboost_churn_pipeline.pkl model_metadata.json ./
 
 # The batch scorer's working directory, and the only writable path in the
-# image -- /app is owned by root at mode 0644 so nothing the container runs
-# can modify its own code or its model.
+# image -- /app and everything in it is owned by root (dir 0755, files 0644),
+# so nothing the container runs can modify its own code or its model.
 #
 # Mounting a host directory here is the whole interface for real use:
 #
-#   docker run -v ./data:/data telco-churn python telco_model.py
+#   docker run -v "$PWD/data:/data" telco-churn python telco_model.py
 #
 # The mount shadows the sample input copied in below, which is the intended
 # behaviour: you bring your own CSV, and the shipped one exists only so that
