@@ -276,6 +276,13 @@ images would erode.
   builder layers, including the ~440 MB venv. That cost is what buys the 2.5x
   speedup: `mode=min` would cache only the final image and skip the expensive
   `uv sync` layer, which is the one worth reusing.
+- **A `pull_request` run is slower than a `push` run on the same commit, and
+  that is not a regression.** Measured 2m38s on the PR event against 42s on
+  the push (both at `1a36c6b`). GitHub scopes Actions caches by ref: a PR run
+  can restore caches from its *base* and the default branch, not from the head
+  branch, so it cannot see what the branch's own push runs wrote. Expect
+  cold-cache timings on PR checks until the branch merges and `main` starts
+  carrying the cache.
 
 ## CHANGELOG.md — mandatory, every session
 

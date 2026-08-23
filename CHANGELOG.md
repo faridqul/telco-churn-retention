@@ -3372,3 +3372,40 @@ which is what surfaced the discrepancy.
 reports `docker` 50s and `test` 19s, both success; `gh run watch --exit-status`
 exited 0. Cache reuse read from the job log (`CACHED` on the builder layers).
 Documentation only — no code changed, so there is nothing else to run.
+
+---
+
+## 2026-08-24 — Record why a PR-event CI run is slower than a push run
+
+**Files touched:**
+- `CLAUDE.md` (one bullet added to the Docker section's CI notes)
+
+**What changed:** Opening PR #1 triggered a fourth CI run, this one on the
+`pull_request` event rather than `push`. Its `docker` job took **2m38s** — well
+above the 50s and 42s the two previous push runs took, and above even the 2m5s
+first cold run.
+
+That looks like a regression and is not one. GitHub scopes Actions caches by
+ref: a `pull_request` run can restore caches created on its *base* branch and
+the default branch, but not ones created on the head branch. So the PR run
+could not see the cache the branch's own push runs had written, and rebuilt
+from cold. Once this branch merges, `main` will carry the cache and later PRs
+will restore from it.
+
+Recorded because the previous two entries document "~50s warm", and the first
+thing anyone will actually look at is the check timing on a PR — where they
+would see 2m38s and reasonably conclude the caching had broken.
+
+**Why:** A number I documented would have been contradicted by the first place
+a reader encounters it.
+
+**Requested or incidental:** Incidental. It surfaced from watching the PR's own
+checks rather than assuming they would match the push runs.
+
+**Verification status:** Verified on GitHub. Run
+[32673084519](https://github.com/faridqul/telco-churn-retention/actions/runs/32673084519)
+(`pull_request` event, PR #1): `test` 19s, `docker` 2m38s, both success —
+compared against run
+[32673006178](https://github.com/faridqul/telco-churn-retention/actions/runs/32673006178)
+(`push`, same commit `1a36c6b`): `test` 22s, `docker` 42s. PR reports
+`MERGEABLE (CLEAN)`. Documentation only; no code changed.
