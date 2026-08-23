@@ -268,12 +268,14 @@ images would erode.
   removing 288 MB, both build-time checks printing OK, and the served
   probability matching the pin -- so those numbers reproduce on a clean
   machine, not just locally.
-- **Expect ~2 minutes for the `docker` job, and don't "optimise" the cache
-  export away.** `cache-to: type=gha,mode=max` costs ~60s per run (20.7s
-  preparing + 41.0s sending) because it exports the intermediate builder
-  layers, including the ~440 MB venv. That is the point: `mode=min` would
-  cache only the final image and skip the expensive `uv sync` layer, which is
-  the one worth reusing.
+- **The `docker` job takes ~2m cold and ~50s warm; don't "optimise" the cache
+  export away.** Measured across two consecutive runs: 2m5s on a cold gha
+  cache (32672676187), 50s on the next push with the builder layers `CACHED`
+  (32672906226). `cache-to: type=gha,mode=max` costs ~60s of the cold run
+  (20.7s preparing + 41.0s sending) because it exports the intermediate
+  builder layers, including the ~440 MB venv. That cost is what buys the 2.5x
+  speedup: `mode=min` would cache only the final image and skip the expensive
+  `uv sync` layer, which is the one worth reusing.
 
 ## CHANGELOG.md — mandatory, every session
 

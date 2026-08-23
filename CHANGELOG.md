@@ -3335,3 +3335,40 @@ One non-blocking observation, not acted on: GitHub annotated both jobs with
 being force-run on Node 24. It affects the pre-existing `test` job as much as
 the new `docker` job, it is a warning rather than a failure, and bumping action
 majors is a separate change from this session's work, so it was left alone.
+
+---
+
+## 2026-08-24 — Correct the docker job's runtime: ~2m is the cold-cache figure, not the steady state
+
+**Files touched:**
+- `CLAUDE.md` (the cache bullet added in the previous entry now gives both the
+  cold and warm timings)
+
+**What changed:** The previous entry's `CLAUDE.md` bullet said to "expect ~2
+minutes for the `docker` job". That was measured on the very first run, when
+the gha cache was empty, and it is not the steady state.
+
+Pushing the doc-update commit triggered a second run, which is the natural
+warm-cache measurement: **50s**, against 2m5s cold — a 2.5x speedup, with the
+builder layers reported as `CACHED` and `importing cache manifest from
+gha:8709624423317703715` in the log. So the bullet now gives both numbers and
+names the two runs they came from, rather than presenting a cold-start figure
+as typical.
+
+The point of the bullet is unchanged and now better supported: the ~60s
+`mode=max` export on a cold run is what buys the warm-run speedup, so it
+should not be "optimised" down to `mode=min`.
+
+**Why:** Accuracy. A number I had just written was measured under conditions I
+did not state, and someone reading it would budget CI time wrongly or conclude
+the cache was not working.
+
+**Requested or incidental:** Incidental. The second run happened as a side
+effect of pushing the previous commit; I watched it rather than ignoring it,
+which is what surfaced the discrepancy.
+
+**Verification status:** Verified on GitHub. Run
+[32672906226](https://github.com/faridqul/telco-churn-retention/actions/runs/32672906226)
+reports `docker` 50s and `test` 19s, both success; `gh run watch --exit-status`
+exited 0. Cache reuse read from the job log (`CACHED` on the builder layers).
+Documentation only — no code changed, so there is nothing else to run.
