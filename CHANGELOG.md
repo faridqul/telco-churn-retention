@@ -1709,3 +1709,37 @@ it and thinks it was missed.
 The new code cell carries no baked-in outputs, `xgboost_churn_pipeline.pkl`,
 `model_metadata.json` and `simulated_new_customers.csv` are untouched, and the
 test suite is unaffected at 118 passing. Committed.
+
+---
+
+## 2026-08-23 — Commit the metadata timestamp from a notebook re-run
+
+**Files touched:**
+- `model_metadata.json`
+
+**What changed:** Only `trained_at` and `git_commit`, updated by a notebook
+re-execution. `trained_at` moved to 2026-08-23T01:27:47Z and `git_commit` now
+records `55aa105`, the commit that was HEAD when the notebook ran.
+
+Nothing else in the file moved: `threshold`, `cv_roc_auc_mean`,
+`cv_roc_auc_std`, `hash`, `library_versions`, `feature_columns` and
+`dummy_customer_score` are all unchanged, and `xgboost_churn_pipeline.pkl` and
+`simulated_new_customers.csv` are byte-identical. By the checklist in
+`CLAUDE.md` under "After re-executing the notebook", that is the signal that
+the artifact reproduced and nothing downstream needs revisiting.
+
+**Why:** The re-run left the working tree dirty with a pure timestamp change.
+Committing it clears that, and — more usefully here — guarantees that every
+current version of the notebook and its artifacts is in git, so if the open
+editor buffer overwrites the appended appendix cells on save, recovery is a
+single `git checkout`.
+
+**Requested or incidental:** Requested — you asked for the outstanding state
+to be resolved.
+
+**Verification status:** The full metadata diff was read rather than assumed;
+byte-identity of the pickle and sample CSV was confirmed with `git diff`. The
+notebook on disk was integrity-checked before committing: valid JSON, 47
+cells, no empty cells, both appendix sections present and non-trivial
+(cells 43–46 at 943 / 3,535 / 878 / 4,741 characters), and cell 35 still
+retains `tuned_estimators`. Test suite: 118 passing, canary matching its pin.
