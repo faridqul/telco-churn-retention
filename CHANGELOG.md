@@ -2702,3 +2702,255 @@ Worth recording as a pattern: the notebook's cell indices have now moved twice
 because of user-added markdown, and both times the documentation drifted
 silently. Diffing cell *sources* — not just outputs — after a re-run is what
 catches it.
+
+---
+
+## 2026-08-24 — Dockerize the project (AUDIT.md roadmap item 4)
+
+**Files touched:**
+- `Dockerfile` (created)
+- `.dockerignore` (created)
+- `.github/workflows/tests.yml` (added a second job, `docker`; the existing
+  `test` job is unchanged)
+- `README.md` (added a "Docker" subsection under "Running it"; added a
+  paragraph to the version-gate discussion; added `Dockerfile` and
+  `.dockerignore` to the repo-structure listing; updated the CI line in that
+  listing; removed "Would containerize with Docker" from Known limitations,
+  since it is now done; added Docker to the Stack line)
+
+**What changed:** The project now builds a production container image.
+
+*One image, two entrypoints.* `api.py` and `telco_model.py` have an identical
+dependency set and share `config.py` and `feature_engineering_telco.py`, so
+they ship together. The default `CMD` starts the API under uvicorn; batch
+scoring is `docker run -v ./data:/data telco-churn python telco_model.py`.
+Building two images was considered and rejected: it would duplicate every
+layer for no benefit while manufacturing exactly the API/batch divergence
+that the project's central invariant exists to prevent.
+
+*The model is copied in, never trained during the build.* The committed
+artifact is byte-reproducible, and training requires the `notebook`
+dependency group, which the image does not install.
+
+*Dependencies.* The build runs `uv sync --frozen --no-dev` in a builder stage,
+copying only `pyproject.toml` and `uv.lock` first so the expensive dependency
+layer is not invalidated by an edit to application code. `--no-dev` was the
+open question going in; it is correct. An import audit across every runtime
+module — `api.py`, `telco_model.py`, `config.py`,
+`feature_engineering_telco.py`, `check_model_environment.py` — found no import
+of `pytest` or `httpx`, so the image ships 26 packages instead of 34 and
+contains no test runner. `--frozen` makes lockfile drift a build failure,
+matching what CI already does.
+
+*The nvidia trim.* The largest single item in the runtime environment turned
+out not to be a project dependency at all. `xgboost` hard-depends on
+`nvidia-nccl-cu13` on Linux: 288 MB of GPU distributed-training libraries that
+a CPU inference container never calls. The builder stage deletes that payload,
+taking the image from 858 MB to 570 MB (measured inside both images with `du`,
+not from `docker images`, which on this daemon reports inflated figures).
+Two alternatives were rejected for concrete reasons, both recorded in comments
+in the Dockerfile: switching to the `xgboost-cpu` distribution would break
+`check_model_environment.py`, which resolves versions through
+`importlib.metadata.version("xgboost")` and would get `PackageNotFoundError`;
+and excluding the dependency in `pyproject.toml` would change the project for
+every consumer, when this is a property of the image alone. The trim step
+*fails the build if it finds nothing to delete*, so if xgboost ever drops the
+dependency, someone removes the block deliberately rather than carrying a
+silent no-op.
+
+*Two build-time verifications.* `check_model_environment.py` runs as a build
+step, which is the point raised in the request: because the image pins its
+libraries from `uv.lock`, the gate turns "this image cannot load its own
+artifact" into a build failure instead of a runtime surprise. A second inline
+check loads the committed `.pkl` and asserts `DUMMY_CUSTOMER` still scores the
+`dummy_customer_score` recorded in the metadata — the version gate proves the
+versions match, this proves the pickle actually loads and reproduces its
+prediction, which version equality alone cannot show. Both run *after*
+`USER appuser`, so they also confirm the unprivileged user can read the
+artifact.
+
+That last decision immediately paid for itself. The first build failed at the
+version gate with `PermissionError: /app/config.py`. Several source files are
+mode `0600` in the working tree from a restrictive local umask, and `COPY`
+preserves host file modes, so the non-root user could not read its own code.
+Fixed with `COPY --chmod=0644`, which makes the image independent of the build
+host's umask. Without the build-time check this image would have built clean
+and died on its first request.
+
+*Security and filesystem layout.* The container runs as `appuser` (uid 10001),
+not root, because `api.py` loads a pickle and `joblib.load` executes arbitrary
+code on deserialization. `/app` is read-only to that user. `/data` is created
+writable and is where the batch scorer reads and writes; mounting a host
+directory there is the whole interface. A `HEALTHCHECK` polls `/health` using
+`urllib` from the venv rather than adding curl to the image.
+
+*CI.* A `docker` job was added to the existing workflow, running in parallel
+with `test` rather than after it — the two answer different questions and
+neither gates the other, so serialising them would only delay the first
+failure signal. It builds the image with gha layer caching, waits on the
+container's own HEALTHCHECK, then asserts the served `/predict` probability is
+exactly `0.7443000078201294` (not merely that a 200 came back), that an
+unknown category is rejected with 422, and that the batch scorer writes
+through a mounted `/data` as the non-root user. Container logs are dumped on
+failure.
+
+**Why:** Requested. Docker was roadmap item 4 in `AUDIT.md` and the last
+remaining "what I'd add for production" item in the README that was purely
+infrastructural. The audit's argument for ranking it high is specific to this
+repo: pinning the runtime library set from `uv.lock` makes it a build artifact
+rather than a hope, which demotes `config.validate_environment_versions()`
+from primary drift defence to cheap assertion. The README's version-gate
+section was extended to say that.
+
+**Requested or incidental:** Requested. The three design decisions inside it
+— `--no-dev`, the nvidia trim, and the load-and-score build check — were put
+to you as explicit choices before implementation and you selected all three.
+The `COPY --chmod=0644` fix was not anticipated; it was forced by a real build
+failure and is incidental to the requested work, though not separable from it.
+
+**Verification status:** Verified by execution, extensively.
+
+- Full test suite before starting: `uv run pytest -q` → **162 passed**, tree
+  clean.
+- Image builds successfully, including a final `--no-cache` cold build from
+  scratch after `docker builder prune -af`.
+- Both build-time checks print OK on every build:
+  `OK: installed library versions match model_metadata.json.` and
+  `OK: artifact loads and reproduces dummy_customer_score (0.5699995160102844)`
+  — the latter matching the value recorded in `CLAUDE.md` exactly.
+- Size measured inside the containers with `du -sx /`: **858 MB untrimmed,
+  570 MB trimmed**, a 288 MB delta matching the nvidia directory exactly. An
+  untrimmed image was built specifically for this comparison and then deleted.
+- `xgboost 3.4.1`, `sklearn 1.9.0`, `numpy 2.5.2`, `pandas 3.0.5` all import
+  in the trimmed image, and the build's own `predict_proba` call exercises
+  xgboost after the trim.
+- Container reaches HEALTHCHECK status `healthy`; `docker exec … id` confirms
+  `uid=10001(appuser)`.
+- `/predict` on the README's documented payload returns
+  `{"churn_probability":0.7443000078201294,"target_for_retention":true,"threshold_used":0.4}`
+  — byte-identical to what the README publishes for a host run.
+- `contract: "Three year"` (unknown category) is rejected with **422**.
+- Batch scorer verified three ways: bare `docker run` with no mount, a mounted
+  `/data` with no env vars, and a mounted volume with explicit `INPUT_PATH`
+  and `OUTPUT_PATH`. All report `15 of 50 customers flagged`. The container's
+  `retention_campaign_targets.csv` is **byte-identical** (`diff`) to the one a
+  host run of `uv run python telco_model.py` produces.
+- Workflow YAML parses; `yaml.safe_load` reports two jobs, `test` (6 steps)
+  and `docker` (8 steps). The `docker` job itself has **not** run on GitHub
+  Actions yet — that only happens on push, so it is verified as valid YAML
+  and as locally-equivalent commands, not as a green CI run.
+- The notebook was not opened, executed, or modified.
+
+Not committed; all changes are in the working tree.
+
+---
+
+## 2026-08-24 — INPUT_PATH / OUTPUT_PATH environment overrides for the batch scorer
+
+**Files touched:**
+- `telco_model.py` (added `import os`; `INPUT_PATH` and `OUTPUT_PATH` now read
+  from the environment)
+- `tests/test_telco_model.py` (added `import importlib` and three new tests
+  plus a `restore_telco_model` fixture at the end of the file; the existing
+  tests and fixture are unchanged)
+- `README.md` (documented the two variables in the "Configuration" subsection;
+  updated the test count from 162 to 165)
+
+**What changed:** `telco_model.py`'s two path constants were hardcoded string
+literals. They now resolve through `os.environ.get` with those same literals as
+defaults, mirroring exactly how `config.py` already handles `MODEL_PATH` and
+`METADATA_PATH`:
+
+```python
+INPUT_PATH = os.environ.get("INPUT_PATH", "simulated_new_customers.csv")
+OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "retention_campaign_targets.csv")
+```
+
+Behaviour with no environment set is unchanged, so a fresh clone runs exactly
+as before.
+
+Three tests were added. The existing `isolated_run` fixture monkeypatches the
+module attributes, which tests that `main()` *uses* the constants but not that
+they *resolve* correctly — so the new tests reload the module with
+`importlib.reload` under a modified environment instead. They cover: the
+defaults with the variables unset, the values with them set, and an end-to-end
+`main()` run that reads and writes through environment-provided paths. A
+fixture reloads the module again on teardown so a test that changed the
+environment cannot leave the imported module holding overridden paths for
+whatever runs next.
+
+**Why:** The container needs to score a CSV that arrives on a mounted volume,
+at a path the image cannot know at build time. Without this, the Docker
+invocation would have to be
+`docker run -v "$PWD:/work" -w /work -e MODEL_PATH=/app/... -e METADATA_PATH=/app/... …`
+— long, easy to get wrong, and it drags the model paths into a problem that is
+really about the data paths. With it, `-v ./data:/data` is the entire
+interface. The image sets both variables to `/data` defaults internally, which
+is also what makes the batch path work at all under the non-root user: `/app`
+is deliberately read-only, so the module's repo-relative default output path
+raises `PermissionError` there. That failure was found by running the
+container, not by reasoning about it.
+
+**Requested or incidental:** Requested, as one of three implementation choices
+put to you before any code was written; you chose this over leaving
+`telco_model.py` untouched. Flagging it explicitly because it is a change to
+application source code rather than to container packaging, which is a wider
+blast radius than "dockerize the project" implies on its face. The
+accompanying tests and the README documentation were not separately requested
+and are incidental to it — an untested and undocumented env-var contract
+seemed worse than the change itself.
+
+**Verification status:** Verified by execution. `uv run pytest -q` →
+**165 passed** (162 before, 3 added), 3.54s, no failures and no new warnings.
+The batch scorer was additionally exercised through the container in all three
+configurations described in the Docker entry above, and its output confirmed
+byte-identical to a host run. Not committed.
+
+---
+
+## 2026-08-24 — Document the Docker design decisions in CLAUDE.md
+
+**Files touched:**
+- `CLAUDE.md` (added a new "## Docker" section between "Conventions" and the
+  CHANGELOG rules; added `Dockerfile` and `.dockerignore` rows to the Layout
+  table; extended the `check_model_environment.py` row to mention it also runs
+  as a build step; updated the `tests/` row from 162 to 165 tests)
+
+**What changed:** A new section recording the decisions behind the Dockerfile
+that a future session would otherwise have to re-derive from comments, or
+worse, silently undo. It covers: why it is one image rather than two; that the
+artifact is copied and never trained in the build; why `--no-dev` and
+`--frozen`; the nvidia-nccl trim including both rejected alternatives and the
+reason the trim step fails loudly when it finds nothing; why `COPY --chmod=0644`
+is load-bearing rather than cosmetic; the two build-time verifications and why
+they run after `USER appuser`; the `/app` read-only, `/data` writable split and
+the fact that the `/data` defaults for `INPUT_PATH` and `OUTPUT_PATH` exist only
+inside the image, not in the module; why `campaign_profit.py` is deliberately
+absent from the image; and why the CI `docker` job runs parallel to `test`.
+
+Nothing already in the file was reworded or removed. The four edits outside the
+new section are additive: two new table rows, one clause appended to an
+existing row, and one number corrected.
+
+**Why:** Several of these are decisions that look like mistakes to someone
+reading the Dockerfile cold, and would be plausibly "fixed" into breakage.
+Deleting `site-packages/nvidia` reads as a hack until you know it is 288 MB of
+GPU libraries and that the obvious alternative breaks the version gate.
+`COPY --chmod=0644` reads as noise until you know its absence causes a
+first-request crash. Omitting `campaign_profit.py` reads as an oversight. This
+is the same category of thing the rest of `CLAUDE.md` exists to record.
+
+**Requested or incidental:** Incidental. You did not ask for `CLAUDE.md` to be
+updated; the request was to dockerize the project. The file documents the
+repo's load-bearing decisions and the Docker work added several, so leaving it
+untouched would have made it stale on the same day it was written. Logged as
+its own entry because `CLAUDE.md` explicitly requires that.
+
+**Verification status:** Documentation only — no code was changed by this
+entry, so there is nothing to execute. Every factual claim in the new section
+was taken from a command actually run during this session and reported in the
+two entries above: the 858 MB → 570 MB measurement, the 288 MB directory size,
+the `PermissionError` that motivated `--chmod`, the pinned
+`0.7443000078201294` response, and the 165-test count. The section headings
+were confirmed to be in the intended order with `grep -n '^## ' CLAUDE.md`.
+Not committed.

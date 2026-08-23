@@ -465,7 +465,11 @@ check_model_environment.py    # CI gate: fails the build if installed library ve
                                # don't match the ones that trained the artifact
 pyproject.toml                # dependencies (managed with uv), split into runtime /
                                # dev / notebook groups
-.github/workflows/tests.yml   # CI: version gate + test suite, on every push and PR
+.github/workflows/tests.yml   # CI: version gate + test suite, and a parallel job that
+                               # builds the image and smoke-tests it, on every push and PR
+Dockerfile                    # production image: API + batch scorer, one image, non-root
+.dockerignore                 # keeps the 1.2 GB local .venv and the notebook out of the
+                               # build context
 
 verify_version_check.sh       # integration check: builds two throwaway venvs and
                                # verifies the version-drift warning actually fires
@@ -544,6 +548,15 @@ directory, but can be overridden per-environment without a code change:
 ```
 MODEL_PATH=/path/to/model.pkl METADATA_PATH=/path/to/metadata.json uvicorn api:app
 ```
+`telco_model.py` reads `INPUT_PATH` and `OUTPUT_PATH` the same way, defaulting
+to `simulated_new_customers.csv` and `retention_campaign_targets.csv` in the
+working directory:
+```
+INPUT_PATH=/data/new.csv OUTPUT_PATH=/data/targets.csv python telco_model.py
+```
+That is what lets the container score a mounted volume without a code change —
+the image ships the script and the model, and the data arrives from outside.
+
 Both the API and the batch script load the model via `joblib.load`, which
 deserializes a pickle — only ever point these at an artifact you trust,
 since pickle deserialization executes arbitrary code on load.
@@ -592,11 +605,74 @@ the batch path checks against — `config.CATEGORICAL_DOMAINS` mirrors this
 model's `Literal` types, and a test asserts the two agree so the two
 consumers cannot drift into accepting different inputs.
 
+**Docker:**
+```
+docker build -t telco-churn .
+docker run -p 8000:8000 telco-churn                            # API
+docker run -v ./data:/data telco-churn python telco_model.py   # batch scoring
+```
+One image serves both entrypoints, on purpose. The API and the batch script
+have an identical dependency set and share `config.py` and
+`feature_engineering_telco.py`, and the invariant that matters most here is
+that the two paths reach the *same* decision — same model, same threshold,
+same `>=` comparison. Two images would duplicate every layer for no benefit
+while creating exactly the divergence that invariant exists to prevent. Both
+were checked against a local run: the container's
+`retention_campaign_targets.csv` is byte-identical to the host's, and
+`/predict` returns the same `0.7443000078201294` documented above.
+
+The model is copied in, never trained during the build. The artifact is
+committed and byte-reproducible, and training needs the `notebook` dependency
+group, which the image deliberately does not install.
+
+**What the build verifies.** Two checks run as build steps, so a broken image
+fails `docker build` instead of failing at the first request in production:
+
+- `check_model_environment.py` — the same hard version gate CI runs. Because
+  the image installs from `uv.lock`, its library set is a build artifact
+  rather than a hope, and this asserts that set matches
+  `model_metadata.json["library_versions"]`.
+- A load-and-score check of the committed `.pkl`, asserting `DUMMY_CUSTOMER`
+  still scores the `dummy_customer_score` recorded in the metadata. The
+  version gate proves the versions match; this proves the pickle actually
+  loads and reproduces its prediction, which version equality alone cannot
+  show.
+
+Both run *after* `USER appuser`, which is how they also confirm the
+unprivileged user can read the artifact. That is not hypothetical — it caught
+a real defect on the first build: several source files are `0600` in the
+working tree from a restrictive umask, `COPY` preserves host modes, and the
+image would otherwise have built clean and died on its first request with
+`PermissionError` on `config.py`. The `COPY --chmod=0644` in the Dockerfile is
+the fix.
+
+**Size.** 570 MB. Dependencies come from the runtime group plus `--no-dev`, so
+neither the training stack (jupyter, matplotlib, seaborn, shap, kagglehub,
+scipy) nor the test runner ships — 26 packages. The single largest remaining
+item was not a project dependency at all: `xgboost` hard-depends on
+`nvidia-nccl-cu13` on Linux, 288 MB of GPU distributed-training libraries a
+CPU inference container never calls. Removing that payload in the builder
+stage takes the image from 858 MB to 570 MB. It is done there rather than by
+switching to the `xgboost-cpu` distribution because `check_model_environment.py`
+resolves versions through `importlib.metadata.version("xgboost")`, which
+raises `PackageNotFoundError` under that package and would fail the gate — and
+rather than in `pyproject.toml` because it is a property of the image, not of
+the project, leaving `uv.lock`, CI and a local `uv sync` untouched.
+
+**Security.** The container runs as `appuser` (uid 10001), not root, because
+`api.py` loads a pickle and `joblib.load` executes arbitrary code on
+deserialization. `/app` is read-only to that user; `/data` is the only
+writable path, which is where the batch scorer reads its input and writes its
+output. `INPUT_PATH` and `OUTPUT_PATH` default to `/data` inside the image, so
+mounting a host directory there is the entire interface — the mount shadows
+the sample CSV baked in, which is intended: the shipped sample exists only so
+a bare `docker run` still demonstrates the batch path.
+
 **Tests:**
 ```
 uv run pytest -q
 ```
-162 tests. They cover feature engineering edge cases, API
+165 tests. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
 and the batch scoring script's I/O contract.
@@ -647,6 +723,15 @@ different from what production checks is worse than no gate. It runs before
 the test suite, so a version skew reports itself as a version problem instead
 of as a cryptic pinned-prediction failure in `test_artifact.py`.
 
+The same gate runs a third time, as a `docker build` step, and that is where
+it changes character. In CI it answers "does this checkout match the
+artifact?" — a question about a machine that will be thrown away. In the image
+it answers "does this artifact match the dependency set that was just pinned
+from `uv.lock`?", and the answer is baked in permanently. The runtime check
+stops being the primary defence against version drift and becomes a cheap
+assertion that the image is the one it claims to be — which is the real
+argument for containerizing this project, more than deployment convenience.
+
 **Missing metadata is fatal.** If `model_metadata.json` is absent or
 unparseable, both consumers stop at startup with a message naming the file
 and how to regenerate it — the artifact records the threshold, the feature
@@ -676,8 +761,6 @@ and a sane default beats an outage.
   distribution and periodically retrain. The feature-schema check catches
   *code/model* drift, not *data* drift (e.g. the input population changing
   over time).
-- Would containerize with Docker for consistent deployment across
-  environments.
 - Hyperparameter search is currently `RandomizedSearchCV`; a Bayesian search
   (Optuna) would likely reach the same ~0.845 plateau with fewer iterations,
   though the convergence check suggests there isn't much headroom left to
@@ -687,7 +770,7 @@ and a sane default beats an outage.
 
 ## Stack
 
-Python, pandas, scikit-learn, XGBoost, SHAP, FastAPI, uv.
+Python, pandas, scikit-learn, XGBoost, SHAP, FastAPI, uv, Docker.
 
 ## License
 

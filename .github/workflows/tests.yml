@@ -48,3 +48,103 @@ jobs:
 
       - name: Run tests
         run: uv run pytest -q
+
+  # Builds the production image on every push and PR, then proves the built
+  # image actually serves. Runs in parallel with `test` rather than after it:
+  # the two answer different questions (does the code work / does the shipped
+  # container work) and neither is a precondition for the other, so serialising
+  # them would only delay the first red X.
+  #
+  # Most of the verification is inside the Dockerfile itself, not here. The
+  # build runs check_model_environment.py and a load-and-score check of the
+  # committed .pkl as build steps, so a version skew or an unloadable artifact
+  # fails `docker build` rather than surfacing at the first request in
+  # production. What is left for this job is the part a build cannot do:
+  # start the thing and talk to it.
+  docker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # BuildKit, for the cache mount on uv's download cache and for
+      # COPY --chmod. gha caching keeps the dependency layer warm between
+      # runs, which is the expensive one -- xgboost and scikit-learn.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true          # into the local daemon, so the steps below can run it
+          tags: telco-churn:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Waits on the container's own HEALTHCHECK rather than on a fixed sleep.
+      # For this image healthy means the lifespan handler finished unpickling
+      # the model, so a pickle that passes the build's load check but fails at
+      # startup is still caught here. Bails out early on `unhealthy` instead of
+      # burning the full timeout.
+      - name: Start the API
+        run: |
+          docker run -d --name telco-churn-ci -p 8000:8000 telco-churn:ci
+          timeout 90 bash -c 'until [ "$(docker inspect -f "{{.State.Health.Status}}" telco-churn-ci)" = healthy ]; do
+            if [ "$(docker inspect -f "{{.State.Health.Status}}" telco-churn-ci)" = unhealthy ]; then
+              echo "container reported unhealthy"; docker logs telco-churn-ci; exit 1
+            fi
+            sleep 2
+          done'
+
+      # Asserts the served prediction, not just a 200. The container must
+      # reach the same decision as everything else in the repo -- same model,
+      # same threshold, same >= comparison -- so this pins the probability
+      # rather than trusting that a response arrived.
+      - name: Smoke test /predict
+        run: |
+          response=$(curl -sf -X POST http://127.0.0.1:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"gender":"Female","seniorcitizen":0,"partner":"Yes","dependents":"No",
+                 "tenure":3,"phoneservice":"Yes","multiplelines":"No",
+                 "internetservice":"Fiber optic","onlinesecurity":"No","onlinebackup":"No",
+                 "deviceprotection":"No","techsupport":"No","streamingtv":"Yes",
+                 "streamingmovies":"Yes","contract":"Month-to-month","paperlessbilling":"Yes",
+                 "paymentmethod":"Electronic check","monthlycharges":85.5,"totalcharges":256.5}')
+          echo "$response"
+          echo "$response" | grep -q '"churn_probability":0.7443000078201294' \
+            || { echo "served probability changed"; docker logs telco-churn-ci; exit 1; }
+          echo "$response" | grep -q '"threshold_used":0.4' \
+            || { echo "threshold changed"; exit 1; }
+
+      # An unknown category must be rejected before the model is touched. The
+      # encoder uses handle_unknown='ignore', so without validation this scores
+      # silently and wrongly rather than erroring -- worth confirming the
+      # shipped image still has the guard.
+      - name: Unknown category must be rejected with 422
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/predict \
+            -H "Content-Type: application/json" \
+            -d '{"gender":"Female","seniorcitizen":0,"partner":"Yes","dependents":"No",
+                 "tenure":3,"phoneservice":"Yes","multiplelines":"No",
+                 "internetservice":"Fiber optic","onlinesecurity":"No","onlinebackup":"No",
+                 "deviceprotection":"No","techsupport":"No","streamingtv":"Yes",
+                 "streamingmovies":"Yes","contract":"Three year","paperlessbilling":"Yes",
+                 "paymentmethod":"Electronic check","monthlycharges":85.5,"totalcharges":256.5}')
+          [ "$code" = "422" ] || { echo "expected 422, got $code"; exit 1; }
+
+      # The batch path, through the same image. Covers the writable /data
+      # mount and the non-root user's ability to write into it -- a failure
+      # mode invisible to any test that runs as root.
+      - name: Smoke test the batch scorer
+        run: |
+          mkdir -p out && chmod 777 out
+          docker run --rm -v "$PWD/out:/data" telco-churn:ci python telco_model.py
+          test -s out/retention_campaign_targets.csv || { echo "no output written"; exit 1; }
+          head -1 out/retention_campaign_targets.csv | grep -q 'Target_For_Retention' \
+            || { echo "output missing the decision column"; exit 1; }
+
+      # Runs on failure too, so a red build still shows why.
+      - name: Container logs
+        if: always()
+        run: docker logs telco-churn-ci || true

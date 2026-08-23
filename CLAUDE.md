@@ -31,8 +31,10 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
-| `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. |
-| `tests/` | 162 tests, a few seconds. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
+| `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. Also runs as a `docker build` step. |
+| `Dockerfile` | Production image. One image, both entrypoints (`uvicorn api:app` by default, `python telco_model.py` for batch). Multi-stage, non-root, `uv sync --no-dev`. Verifies itself at build time — see the Docker section below. |
+| `.dockerignore` | Keeps the local `.venv` (1.2 GB) and the notebook out of the build context. Without it every build uploads both to the daemon. |
+| `tests/` | 165 tests, a few seconds. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
@@ -201,6 +203,55 @@ number the README publishes. Check these, in order:
   "can't tell" fails). Both resolve versions through
   `config._current_library_versions()` — keep it that way, or CI and
   production can disagree about what's installed.
+
+## Docker
+
+One image, both entrypoints. `CMD` is `uvicorn api:app`; batch scoring is
+`docker run -v ./data:/data telco-churn python telco_model.py`. Don't split
+this into two images — `api.py` and `telco_model.py` have an identical
+dependency set, and the "both paths make the same decision" invariant above
+is exactly what two independently-built images would erode.
+
+- **Never train in the build.** The artifact is committed and
+  byte-reproducible; it is `COPY`d in. Training needs the `notebook` group,
+  which the image deliberately doesn't install.
+- **`uv sync --frozen --no-dev`** — 26 packages. `--no-dev` verified safe by
+  import audit: no runtime module imports pytest or httpx. `--frozen` makes
+  lockfile drift a build failure, matching CI.
+- **The nvidia trim is deliberate and load-bearing.** `xgboost` hard-depends
+  on `nvidia-nccl-cu13` on Linux — 288 MB of GPU training libraries a CPU
+  inference container never calls. The builder stage deletes the payload,
+  taking the image from 858 MB to 570 MB. It **fails the build if it finds
+  nothing to delete**, so the trim can never silently become a no-op. Don't
+  "fix" this by switching to `xgboost-cpu`: `check_model_environment.py`
+  resolves via `importlib.metadata.version("xgboost")`, which raises
+  `PackageNotFoundError` under that distribution and fails the gate. Don't
+  move it into `pyproject.toml` either — it's a property of the image, and
+  keeping it here leaves `uv.lock`, CI and local `uv sync` untouched.
+- **`COPY --chmod=0644` is not cosmetic.** Several source files are `0600` in
+  the working tree from a restrictive umask, and `COPY` preserves host modes.
+  Without the explicit mode the image builds clean and dies on first request
+  with `PermissionError` on `config.py`.
+- **Two build-time verifications, both after `USER appuser`** so they also
+  prove the unprivileged user can read the artifact: `check_model_environment.py`
+  (versions match the artifact) and an inline load-and-score check
+  (`DUMMY_CUSTOMER` still scores `dummy_customer_score`). The first is the
+  version gate's third home; per AUDIT.md item 4, pinning from `uv.lock` is
+  what demotes `validate_environment_versions()` from primary control to
+  cheap assertion.
+- **`/app` is read-only; `/data` is the only writable path.** `INPUT_PATH` and
+  `OUTPUT_PATH` (new in `telco_model.py`, mirroring `config.py`'s `MODEL_PATH`
+  handling) default to `/data` **inside the image only** — the module defaults
+  remain the repo-relative filenames. Mounting a host dir at `/data` shadows
+  the sample CSV baked in; that's intended.
+- **`campaign_profit.py` is deliberately not in the image.** Neither entrypoint
+  imports it; the threshold its formula chose is already in
+  `model_metadata.json`. If an endpoint ever needs `break_even_threshold()`,
+  add it to the `COPY` line.
+- CI's `docker` job runs **parallel to** `test`, not after it. It builds the
+  image and smoke-tests the running container: `/predict` pinned at
+  `0.7443000078201294`, an unknown category rejected with 422, and the batch
+  scorer writing through a mounted `/data` as non-root.
 
 ## CHANGELOG.md — mandatory, every session
 

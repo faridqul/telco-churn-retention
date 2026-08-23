@@ -8,6 +8,8 @@ depend on a trained .pkl or model_metadata.json existing on disk).
 Run with: pytest tests/test_telco_model.py -v
 """
 
+import importlib
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -112,3 +114,75 @@ def test_main_raises_when_input_csv_missing(tmp_path, monkeypatch):
         telco_model.main()
 
     assert not output_path.exists()
+
+
+# --- INPUT_PATH / OUTPUT_PATH environment overrides --------------------------
+# Both constants are read from the environment at import time, mirroring how
+# config.py resolves MODEL_PATH and METADATA_PATH. Reloading the module is the
+# only way to exercise that: monkeypatching the attribute (what the fixture
+# above does) tests the *use* of the constant, not the *resolution* of it.
+
+
+def _reload_telco_model():
+    """Re-import telco_model so its module-level os.environ.get calls run
+    again against whatever the current environment is."""
+    return importlib.reload(telco_model)
+
+
+@pytest.fixture(autouse=False)
+def restore_telco_model():
+    """Reload once more on the way out, so a test that changed the
+    environment doesn't leave the imported module holding overridden paths
+    for every test that runs after it."""
+    yield
+    _reload_telco_model()
+
+
+def test_paths_default_to_repo_relative_files(monkeypatch, restore_telco_model):
+    """A fresh clone with no environment set must behave exactly as it did
+    before the override existed -- these two filenames are what the README
+    documents and what .gitignore names."""
+    monkeypatch.delenv("INPUT_PATH", raising=False)
+    monkeypatch.delenv("OUTPUT_PATH", raising=False)
+
+    reloaded = _reload_telco_model()
+
+    assert reloaded.INPUT_PATH == "simulated_new_customers.csv"
+    assert reloaded.OUTPUT_PATH == "retention_campaign_targets.csv"
+
+
+def test_paths_read_from_environment(monkeypatch, restore_telco_model):
+    """The container case: the image ships the script and the artifact, and
+    the data arrives on a mounted volume at a path the image can't know."""
+    monkeypatch.setenv("INPUT_PATH", "/data/new_customers.csv")
+    monkeypatch.setenv("OUTPUT_PATH", "/data/targets.csv")
+
+    reloaded = _reload_telco_model()
+
+    assert reloaded.INPUT_PATH == "/data/new_customers.csv"
+    assert reloaded.OUTPUT_PATH == "/data/targets.csv"
+
+
+def test_main_scores_through_environment_provided_paths(
+    tmp_path, monkeypatch, restore_telco_model
+):
+    """End to end through the override rather than through a monkeypatched
+    attribute: setting the two variables must actually change which files
+    main() reads and writes, not just which strings the module holds."""
+    input_path = tmp_path / "mounted_input.csv"
+    output_path = tmp_path / "mounted_output.csv"
+    pd.DataFrame([RAW_CUSTOMER_ROW]).to_csv(input_path, index=False)
+
+    monkeypatch.setenv("INPUT_PATH", str(input_path))
+    monkeypatch.setenv("OUTPUT_PATH", str(output_path))
+    reloaded = _reload_telco_model()
+
+    monkeypatch.setattr(reloaded, "validate_feature_schema", lambda: None)
+    monkeypatch.setattr(reloaded, "validate_environment_versions", lambda: None)
+    monkeypatch.setattr(reloaded, "load_threshold", lambda: 0.5)
+    monkeypatch.setattr(reloaded, "joblib", _FakeJoblib())
+
+    reloaded.main()
+
+    assert output_path.exists()
+    assert len(pd.read_csv(output_path)) == 1
