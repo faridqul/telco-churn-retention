@@ -179,10 +179,10 @@ the same two options, same budget, same seed. But this model's ROC-AUC surface
 is genuinely flat, so the winning `C` slides between near-tied draws from one
 run to the next, and the best threshold follows it: this row has legitimately
 produced both 0.58 and 0.62, with accuracy between 0.7758 and 0.7867, while
-ROC-AUC moves only in the fifth decimal (0.843891 – 0.843903) — four orders of
-magnitude below its own 0.019 fold-to-fold std. Profit stays at $26,200 and the
-ordering never changes. The figures above are from the committed notebook run.
-The XGBoost and Random Forest rows are stable.*
+ROC-AUC moves only in the fifth decimal (0.843891 – 0.843903) — a spread three
+orders of magnitude below its own 0.019 fold-to-fold std. Profit stays at
+$26,200 and the ordering never changes. The figures above are from the
+committed notebook run. The XGBoost and Random Forest rows are stable.*
 
 Random Forest edges out XGBoost on profit here (\$27,000 vs. \$26,640), but at
 a ROC-AUC gap of just 0.0017 — an order of magnitude smaller than the ~0.02
@@ -191,8 +191,8 @@ from noise without a proper significance test (see Known limitations). It
 isn't a reason to switch models.
 
 The more interesting pattern is the **threshold split**: XGBoost's optimum
-(0.40) sits well below Random Forest's and Logistic Regression's (both 0.58
-in this run). This is a real, structural effect, not a coincidence: boosted trees
+(0.40) sits well below Random Forest's and Logistic Regression's (both 0.58 in
+this run). This is a real, structural effect, not a coincidence: boosted trees
 build up probability estimates additively across rounds, which tends to push
 them toward the extremes (more separated between classes), while averaging
 many trees (Random Forest) or fitting a single smooth sigmoid (Logistic

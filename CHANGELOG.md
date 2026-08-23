@@ -2024,3 +2024,51 @@ threshold precision (0.400 ± 0.047, the 0.35–0.46 plateau, the +0.029 leakage
 shift with its interval straddling zero). Test suite: 141 passing in ~2s. Not
 committed yet; the re-executed notebook and the rewritten metadata are also
 still uncommitted in the working tree.
+
+---
+
+## 2026-08-23 — Correct an order-of-magnitude claim in the Logistic Regression footnote
+
+**Files touched:** `README.md`
+
+**What changed:** Re-checking the previous entry's edit found an arithmetic
+error I introduced in it. The original footnote described a single 5e-6 shift
+in Logistic Regression's ROC-AUC and called it "four orders of magnitude below
+this model's own 0.019 fold-to-fold std" — 0.019 divided by 5e-6 is about
+3,800, so "four" was a defensible rounding of 3.6. When I rewrote that
+footnote to give a *range* of observed values (0.843891 to 0.843903) instead
+of one before-and-after pair, the quantity being compared changed: the span is
+now 1.2e-5, and 0.019 divided by that is about 1,583, which is 3.2 orders of
+magnitude. I had carried the word "four" across unchanged. It now reads "a
+spread three orders of magnitude below its own 0.019 fold-to-fold std."
+
+Two lines were also re-wrapped to the file's ~80-column prose width, in that
+same footnote and in the threshold-split paragraph, where the previous edit
+had left lines running long.
+
+**Why:** The number was simply wrong after the rewrite, and this document's
+whole argument style rests on stated magnitudes being checkable. An
+overstatement of the noise floor by a factor of ten is exactly the kind of
+claim a reader would be right to test.
+
+**Requested or incidental:** Incidental in origin — nobody asked for this
+specific fix — but it came out of an explicitly requested re-check of the
+previous turn's work.
+
+**Verification status:** The ratio was recomputed rather than estimated
+(0.019 / 1.2e-5 = 1583, log10 = 3.20). The rest of the README was audited
+against the notebook's stored outputs in the same pass, and everything else
+agrees: the model-comparison row matches cell 35 exactly (0.843903 / 0.018882
+/ 0.58 / 0.7758 / 26,200), the sensitivity sweep matches all fifteen rows of
+cell 27, the calibration table matches cell 29 (Brier 0.1342, +0.022 all bins,
++0.051 in the decision band, +0.046 mean offset), the precision and leakage
+tables match cell 49, and the error-overlap table matches cell 46. One
+apparent discrepancy was checked and is not one: the README says a score of
+0.45 corresponds to about 38% real risk while cell 29's prose says 39%. The
+README is citing cell 44's Platt-calibrated lookup table, which does map 0.45
+to 0.38, and the surrounding sentence points the reader at that appendix; 39%
+is cell 29's coarser bin-gap estimate. Both are right about their own source.
+Also re-confirmed from the notebook rather than from memory: cells 26 and 30
+have outputs byte-identical to commit e938061, no cell's source changed, and
+`model_metadata.json` differs only in `trained_at` and `git_commit`. Test
+suite: 141 passing. Committed.
