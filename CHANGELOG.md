@@ -2242,3 +2242,77 @@ entry for editing it mandatory.
 **Verification status:** Prose only, no executable claims. The counts in it
 were taken from an actual test run (153 passing) and an actual directory
 listing (9 files in `tests/`), not estimated. Committed.
+
+---
+
+## 2026-08-23 — Report PR-AUC alongside ROC-AUC
+
+**Files touched:** `telco_customer_churn.ipynb` (cells 2, 25, 31, 33, 35, 40,
+46), `README.md`, `CLAUDE.md`
+
+**What changed:** ROC-AUC was the only ranking metric the project reported.
+With roughly 26% churn that is a soft measure: ROC-AUC gives credit for true
+negatives, and since 74% of these customers do not churn it stays comfortable
+even when the ranking of actual churners gets worse. PR-AUC (average
+precision) ignores true negatives entirely, so it tracks only the class the
+retention campaign spends money on. `average_precision_score` is now computed
+everywhere `roc_auc_score` already was.
+
+Cell 2 imports the function. Cell 25 adds a 5-fold CV PR-AUC next to the
+existing CV ROC-AUC. Cell 31 prints test PR-AUC under test ROC-AUC. Cell 33,
+which already drew a precision-recall curve but reported no number, now shows
+the average precision in its title and draws the no-skill baseline as a dashed
+line. Cell 35 gains a `PR-AUC (OOF)` column in the model-comparison table.
+Cell 40 records `cv_pr_auc_mean`, `cv_pr_auc_std` and `churn_rate_train` in
+`model_metadata.json`. Cell 46's appendix prints PR-AUC beside OOF AUC for
+each model and for their average.
+
+Two things were deliberately *not* done. The searches still use
+`scoring='roc_auc'`; PR-AUC is reported, not optimised, because changing the
+selection metric would change which model ships, and that is a different
+decision from measuring one more thing. And nothing reads the new metadata
+keys at runtime — they are provenance for the README, so no validator or
+consumer changed.
+
+Everywhere PR-AUC appears it is stated against its baseline. This matters more
+than it might look: PR-AUC's floor is the positive rate, not 0.5, so 0.6610
+read cold looks mediocre when it is in fact 2.50x a random ranking. The README
+now says so in the Results table, and CLAUDE.md records it so it is not
+misread later.
+
+**Why:** Requested. It was also already written down as a known limitation in
+the README's own list, so that bullet was deleted — the limitation no longer
+exists.
+
+**Requested or incidental:** Requested. Removing the now-false limitation
+bullet and recording the figures in CLAUDE.md are incidental follow-on edits;
+CLAUDE.md's own rule requires this entry to name that edit explicitly.
+
+**Verification status:** The numbers published are measured, but they were
+measured by *reconstruction*, not by re-running the notebook — the edited
+cells have not been executed, exactly as with the earlier `campaign_profit()`
+extraction. A script rebuilt the splits from the cached dataset using the same
+seeds, loaded the committed `.pkl`, and recomputed everything. Its fidelity
+was established against four numbers the project already publishes, all of
+which it reproduced: test ROC-AUC 0.8441, CV ROC-AUC 0.849141 ± 0.017474
+(matching `model_metadata.json` to every recorded digit), Random Forest's CV
+ROC-AUC 0.844126 (matching cell 35 exactly), and the OOF ROC-AUCs of all three
+models (0.8492 / 0.8466 / 0.8472, matching cell 46). Only the Logistic
+Regression CV figure differed, 0.843901 against 0.843903, which is that row's
+known run-to-run instability.
+
+The measured results: test PR-AUC 0.660997 against a 0.264769 baseline
+(2.497x); CV PR-AUC 0.664294 ± 0.037438; OOF PR-AUC 0.660301 for XGBoost,
+0.654806 for Logistic Regression, 0.653229 for Random Forest. Worth flagging
+one finding rather than burying it: PR-AUC *reverses* Random Forest and
+Logistic Regression relative to ROC-AUC. The gap is 0.0016 — a twentieth of
+PR-AUC's own fold-to-fold std — so it is noise and changes nothing, and
+XGBoost leads on both metrics regardless. But it is a clean illustration of
+why the second metric was worth adding, and the README says so.
+
+All seven edited cells were checked to parse (`ast.parse`), the notebook still
+has its 50 cells, and the diff touches source only — no stored output was
+altered. What has *not* been verified is the cells actually executing: cell 40
+now references `cv_pr_auc`, which cell 25 defines, and that link only proves
+itself in a real top-to-bottom run. `model_metadata.json` therefore does not
+yet contain the new keys. Test suite: 153 passing. Committed.

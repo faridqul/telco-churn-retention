@@ -96,7 +96,9 @@ account and API credentials configured locally
 | Metric | Value |
 |---|---|
 | CV ROC-AUC (train) | 0.8491 ± 0.0175 |
+| CV PR-AUC (train) | 0.6643 ± 0.0374 |
 | Test ROC-AUC | 0.8441 |
+| Test PR-AUC | 0.6610 (random baseline 0.2648 → **2.50x**) |
 | Operating threshold | **0.40 ± 0.05** (profit-optimized via 5-fold OOF on `X_train`, not the default 0.5) |
 | Test precision / recall / F1 (churn class) | 0.59 / 0.69 / 0.63 |
 | Test accuracy | 79% |
@@ -123,6 +125,24 @@ which cutoff gets applied to those same probabilities: 0.40 trades a bit of
 precision for more recall (more customers correctly flagged as churners, a few
 more false alarms too), which nets a higher profit under the stated cost
 assumptions.*
+
+**Why both ranking metrics.** ROC-AUC is reported by convention, but it
+counts true negatives, and 74% of these customers don't churn — so it stays
+comfortable even when the ranking of actual churners degrades. PR-AUC
+(average precision) ignores true negatives entirely and tracks only the class
+the campaign spends money on, which makes it the more sensitive read under
+this imbalance. Its baseline is not 0.5: a model ranking at random scores the
+churn rate itself, 0.2648. Against that floor, 0.6610 is **2.50x better than
+random**, which is the honest statement of ranking quality here — 0.8441
+sounds stronger than the model is, because a large part of it is earned on
+the easy majority class.
+
+Both are threshold-independent, so neither is affected by the 0.40 operating
+threshold, and adding PR-AUC changed no model, no threshold and no shipped
+artifact. Worth noting that PR-AUC is also the noisier of the two: its
+fold-to-fold std is 0.0374 against ROC-AUC's 0.0175, more than double.
+Sensitivity to the minority class cuts both ways — there are simply fewer
+positives for each fold's estimate to rest on.
 
 **Model comparison** — XGBoost, Logistic Regression, and Random Forest
 converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843903 /
@@ -165,11 +185,24 @@ actually optimizes for, each model was also given its own profit-maximizing
 threshold (same method as XGBoost's: a scan over 5-fold OOF predictions on
 `X_train`, using the same `clv`/`cost`/`success_rate` constants):
 
-| Model | Mean ROC-AUC | Std Dev | Best Threshold | Accuracy @ Threshold | Profit @ Threshold ($) |
-|---|---|---|---|---|---|
-| XGBoost (Tuned) | 0.845812 | 0.019575 | 0.40 | 0.7876 | 26,640 |
-| Random Forest | 0.844126 | 0.016803 | 0.58 | 0.7810 | 27,000 |
-| Logistic Regression | 0.843903 | 0.018882 | 0.58 | 0.7758 | 26,200 |
+| Model | Mean ROC-AUC | Std Dev | PR-AUC (OOF) | Best Threshold | Accuracy @ Threshold | Profit @ Threshold ($) |
+|---|---|---|---|---|---|---|
+| XGBoost (Tuned) | 0.845812 | 0.019575 | 0.6603 | 0.40 | 0.7876 | 26,640 |
+| Random Forest | 0.844126 | 0.016803 | 0.6532 | 0.58 | 0.7810 | 27,000 |
+| Logistic Regression | 0.843903 | 0.018882 | 0.6548 | 0.58 | 0.7758 | 26,200 |
+
+PR-AUC is computed on the same out-of-fold predictions as the threshold and
+profit columns, so every column shares one basis. Note it **reorders the two
+runners-up**: Random Forest is ahead of Logistic Regression on ROC-AUC and
+behind it on PR-AUC. That is the metric doing exactly what it is there for —
+ROC-AUC's true-negative credit flatters the model that is better at the
+majority class, and 74% of these customers don't churn. It is not a reason to
+change anything, though: the 0.0016 gap is a twentieth of PR-AUC's own 0.037
+fold-to-fold std, so it is noise, and XGBoost leads on both metrics either
+way. Selection still runs on ROC-AUC (`scoring='roc_auc'`); PR-AUC is
+reported, not optimized, because changing the search metric would change
+which model ships and that is a different decision from measuring one more
+thing.
 
 *The Logistic Regression row is the one number here that does not reproduce
 exactly between runs, and it is worth knowing why before reading anything into
@@ -559,11 +592,6 @@ and a sane default beats an outage.
   distinguishable from noise" by eye, but never actually tested. A paired
   Wilcoxon signed-rank test on the per-fold CV scores (`cv_results_` already
   has these) would turn that into a real yes/no instead of an eyeball call.
-- **ROC-AUC is the only ranking metric reported.** With ~26% churn, PR-AUC is
-  arguably more informative — it's more sensitive to minority-class
-  (churner) performance than ROC-AUC under imbalance, and costs almost
-  nothing to add (`average_precision_score` alongside the existing
-  `roc_auc_score` calls).
 - No auth on the API — fine for a local demo, not for anything exposed
   publicly.
 - No monitoring or drift detection — churn drivers shift over time in

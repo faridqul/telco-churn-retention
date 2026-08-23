@@ -95,7 +95,16 @@ now 35, its "cell 38" is now 40).
   by `tests/test_artifact.py`; the notebook's save cell rewrites both
   together on retrain, so the pin can't go stale.
 - Test metrics reproduce exactly from the committed `.pkl`: ROC-AUC 0.8441,
-  P 0.5885, R 0.6882, F1 0.6344, acc 0.7900, TP/FP/FN/TN 256/179/116/854.
+  PR-AUC 0.6610, P 0.5885, R 0.6882, F1 0.6344, acc 0.7900,
+  TP/FP/FN/TN 256/179/116/854.
+- **PR-AUC's baseline is the churn rate (0.2648), not 0.5.** Always report it
+  against that floor — 0.6610 is 2.50x random. CV PR-AUC is 0.6643 ± 0.0374,
+  i.e. more than twice ROC-AUC's 0.0175 spread: fewer positives per fold, so
+  the estimate is noisier. OOF PR-AUC by model: XGB 0.6603, LR 0.6548,
+  RF 0.6532 — note this **reverses** RF and LR relative to ROC-AUC, but by
+  0.0016, far inside the noise. Model selection still runs on
+  `scoring='roc_auc'`; PR-AUC is reported, never optimised. Don't "fix" the
+  search to maximise it — that would change which model ships.
 - Extreme *numbers* are safe: the tree ensemble saturates, so `tenure=10**15`
   scores identically to `tenure=1000`. There is deliberately no range check.
   Unknown *categories* are the real hazard — hence the domain validation.
@@ -120,8 +129,11 @@ number the README publishes. Check these, in order:
 
 1. **`git diff model_metadata.json`.** If only `trained_at` and `git_commit`
    moved, the artifact reproduced and nothing downstream needs touching. If
-   `threshold`, `cv_roc_auc_*`, `dummy_customer_score` or `hash` moved, the
-   model genuinely changed — every README figure is now suspect.
+   `threshold`, `cv_roc_auc_*`, `cv_pr_auc_*`, `dummy_customer_score` or
+   `hash` moved, the model genuinely changed — every README figure is now
+   suspect. On the *first* run after PR-AUC was added, `cv_pr_auc_mean`,
+   `cv_pr_auc_std` and `churn_rate_train` appear as new keys; that is the
+   expected one-off, not a model change.
 2. **`uv run pytest -q`.** `tests/test_artifact.py` re-pins itself against the
    rewritten metadata, so it passing does *not* prove the model is unchanged —
    step 1 is what proves that.
