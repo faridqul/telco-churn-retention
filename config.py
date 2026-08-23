@@ -4,13 +4,13 @@ Single source of truth for paths and the threshold-loading logic, so
 api.py and telco_model.py can't silently drift apart.
 """
 
+import importlib.metadata
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
-import sklearn
-import xgboost
 
 from feature_engineering_telco import engineer_features
 
@@ -27,6 +27,16 @@ METADATA_PATH = os.environ.get("METADATA_PATH", "model_metadata.json")
 # value is unusable (absent, null, a list, an uncastable string). A missing
 # or unparseable metadata FILE is fatal instead -- see _load_metadata.
 DEFAULT_THRESHOLD = 0.4
+
+# The feature-contract version this code implements. The notebook stamps the
+# same string into model_metadata.json when it saves. Bump BOTH together when
+# engineer_features() changes shape in a way an old artifact wouldn't survive.
+#
+# The column-set check below already catches a renamed or dropped column. This
+# catches the case it can't see: same column names, different meaning -- a
+# formula corrected, a unit changed, a category folded. The columns still line
+# up, so the model loads and predicts, wrongly and quietly.
+SUPPORTED_FEATURE_SCHEMA_VERSION = "1.0"
 
 # Minimal, arbitrary-but-valid customer used only to probe
 # engineer_features()'s output columns at startup. Values don't matter --
@@ -260,19 +270,45 @@ def load_threshold(metadata_path: str = METADATA_PATH) -> float:
         return DEFAULT_THRESHOLD
 
 
+# Distribution name -> import name, for the libraries the pickled pipeline is
+# most sensitive to. The two differ for scikit-learn, which is why this map
+# exists rather than a plain list.
+_TRACKED_LIBRARIES = {
+    "scikit-learn": "sklearn",
+    "xgboost": "xgboost",
+    "numpy": "numpy",
+    "pandas": "pandas",
+}
+
+
 def _current_library_versions() -> dict[str, str]:
     """Installed versions of the libraries the pickled pipeline is most
     sensitive to. Broken out as its own function (rather than inlined
     into validate_environment_versions) purely so tests can monkeypatch
     it directly, without needing every exact version under test actually
     installed.
+
+    Reads an already-imported module's __version__ when there is one, and
+    falls back to installed-distribution metadata otherwise. Both halves
+    earn their place. The module attribute is the more truthful answer --
+    it is the copy that will actually unpickle the artifact, which is what
+    this check is about, and it is what wins if a shadowed second install
+    ever makes the two disagree. The metadata fallback is what lets this
+    module stop importing scikit-learn and XGBoost purely to read a string:
+    that import cost 559ms and 33ms of a 771ms `import config`, paid by
+    every consumer including tests that never touch either library.
     """
-    return {
-        "scikit-learn": sklearn.__version__,
-        "xgboost": xgboost.__version__,
-        "numpy": np.__version__,
-        "pandas": pd.__version__,
-    }
+    versions = {}
+    for distribution, module_name in _TRACKED_LIBRARIES.items():
+        module = sys.modules.get(module_name)
+        version = getattr(module, "__version__", None) if module else None
+        if version is None:
+            try:
+                version = importlib.metadata.version(distribution)
+            except importlib.metadata.PackageNotFoundError:
+                continue  # not installed; nothing to compare against
+        versions[distribution] = version
+    return versions
 
 
 def validate_environment_versions(metadata_path: str = METADATA_PATH) -> None:
@@ -360,8 +396,28 @@ def validate_feature_schema(metadata_path: str = METADATA_PATH) -> None:
     engineered column) would silently produce a 500 -- or worse, a silently
     wrong prediction -- at request time instead of failing loudly at
     startup.
+
+    Checks two things: the declared feature_schema_version, and then the
+    actual column set. The version catches same-names-different-meaning
+    drift that a column comparison is blind to.
     """
     metadata = _load_metadata(metadata_path)
+
+    schema_version = metadata.get("feature_schema_version")
+    if schema_version is None:
+        print(f"WARNING: {metadata_path} declares no 'feature_schema_version' "
+              f"(artifact predates the check) -- validating columns only.")
+    elif schema_version != SUPPORTED_FEATURE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Feature schema version mismatch: {metadata_path} declares "
+            f"{schema_version!r}, this code implements "
+            f"{SUPPORTED_FEATURE_SCHEMA_VERSION!r}. The engineered columns may "
+            f"carry the same names and different meanings, which the column "
+            f"check below cannot detect. Retrain with the current "
+            f"feature_engineering_telco.py, or check out the code that matches "
+            f"the artifact."
+        )
+
     feature_columns = metadata.get("feature_columns")
     if not feature_columns:
         raise RuntimeError(

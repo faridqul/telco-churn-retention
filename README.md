@@ -145,7 +145,7 @@ Sensitivity to the minority class cuts both ways — there are simply fewer
 positives for each fold's estimate to rest on.
 
 **Model comparison** — XGBoost, Logistic Regression, and Random Forest
-converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843903 /
+converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843899 /
 0.844126, each well within one standard deviation of the others). Rather than
 read this as "the model choice didn't matter," I read it as evidence the
 dataset itself has an information ceiling around ROC-AUC ≈ 0.845 — churn here
@@ -189,7 +189,7 @@ threshold (same method as XGBoost's: a scan over 5-fold OOF predictions on
 |---|---|---|---|---|---|---|
 | XGBoost (Tuned) | 0.845812 | 0.019575 | 0.6603 | 0.40 | 0.7876 | 26,640 |
 | Random Forest | 0.844126 | 0.016803 | 0.6532 | 0.58 | 0.7810 | 27,000 |
-| Logistic Regression | 0.843903 | 0.018882 | 0.6548 | 0.58 | 0.7758 | 26,200 |
+| Logistic Regression | 0.843899 | 0.018893 | 0.6548 | 0.58 | 0.7760 | 26,220 |
 
 PR-AUC is computed on the same out-of-fold predictions as the threshold and
 profit columns, so every column shares one basis. Note it **reorders the two
@@ -213,9 +213,10 @@ is genuinely flat, so the winning `C` slides between near-tied draws from one
 run to the next, and the best threshold follows it: this row has legitimately
 produced both 0.58 and 0.62, with accuracy between 0.7758 and 0.7867, while
 ROC-AUC moves only in the fifth decimal (0.843891 – 0.843903) — a spread three
-orders of magnitude below its own 0.019 fold-to-fold std. Profit stays at
-$26,200 and the ordering never changes. The figures above are from the
-committed notebook run. The XGBoost and Random Forest rows are stable.*
+orders of magnitude below its own 0.019 fold-to-fold std. Profit tracks the
+threshold across a $40 range ($26,200–$26,240) and the ordering never changes.
+The figures above are from the committed notebook run. The XGBoost and Random
+Forest rows are stable.*
 
 Random Forest edges out XGBoost on profit here (\$27,000 vs. \$26,640), but at
 a ROC-AUC gap of just 0.0017 — an order of magnitude smaller than the ~0.02
@@ -365,8 +366,56 @@ raw scores.
 
 ## Interpretability
 
-SHAP (`TreeExplainer`) is used against the final refit model to surface which
-features drive individual predictions, not just aggregate feature importance.
+SHAP (`TreeExplainer`) is run against the final refit model on the held-out
+test set, so these are attributions for the model that actually ships. Mean
+|SHAP| across the 51 encoded features, in log-odds units:
+
+| Feature | Mean \|SHAP\| | Direction |
+|---|---|---|
+| `contract = Month-to-month` | 0.589 | ↑ churn |
+| `contractvstenure` *(engineered)* | 0.282 | ↓ churn |
+| `internetservice = Fiber optic` | 0.272 | ↑ churn |
+| `tenure` | 0.211 | ↓ churn |
+| `onlinesecurity = No` | 0.197 | ↑ churn |
+| `monthlycharges` | 0.154 | ↑ churn |
+| `techsupport = No` | 0.142 | ↑ churn |
+| `paymentmethod = Electronic check` | 0.126 | ↑ churn |
+
+**Contract type dominates.** Being month-to-month carries more than twice the
+attribution of the next feature and roughly a fifth of all 51 features
+combined; `contract = Two year` shows up separately at 0.126 pulling the other
+way. The top five features account for **53.6%** of total attribution, so this
+is a model driven by a handful of things rather than a broad blend.
+
+Three findings worth drawing out:
+
+- **The commitment story is the whole story.** Contract type, `tenure`, and
+  the engineered interaction between them occupy three of the top four slots.
+  Customers who haven't committed and haven't been around long are the
+  churners, which is intuitive — the useful part is that the model says so
+  loudly rather than spreading attribution thinly.
+- **One engineered feature earns its place, decisively.**
+  `contractvstenure` — contract length ordinal × tenure — ranks **second
+  overall**, above raw `tenure` itself. The interaction carries information
+  neither parent has alone: two years on a month-to-month contract means
+  something different from two years on a two-year contract. The remaining
+  engineered features (`total_services`, `family_tie`, `charge_change_ratio`)
+  land far lower, so this is one clear win rather than a vindication of the
+  whole set.
+- **Two drivers are directly actionable, and the campaign ignores them.**
+  `onlinesecurity = No` (0.197) and `techsupport = No` (0.142) together carry
+  more attribution than `tenure`. Unlike contract type or tenure, these are
+  add-ons the business can simply *give* someone. The retention campaign
+  modelled here is a flat $20 discount offer applied uniformly; SHAP suggests
+  bundling a security or support add-on to the customers missing one may be a
+  better intervention than a price cut. That is a hypothesis this data cannot
+  confirm — it is correlational, and customers who decline add-ons may differ
+  in ways the model can't see — but it is the kind of lead worth an A/B test,
+  and it is a more specific next step than "improve the model."
+
+`Fiber optic` at 0.272 with `monthlycharges` at 0.154, both pushing toward
+churn, is the familiar pattern of a premium tier that costs more and
+under-delivers; worth flagging to whoever owns that product line.
 
 ## Repo structure
 

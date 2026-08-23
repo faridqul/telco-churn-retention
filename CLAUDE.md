@@ -32,7 +32,8 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
 | `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. |
-| `tests/` | 153 tests, ~3.8 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 files at collection. |
+| `tests/` | 162 tests, ~3.8 s. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
+| `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
@@ -66,7 +67,10 @@ now 35, its "cell 38" is now 40).
   `model_metadata.json["feature_columns"]`. `config.validate_feature_schema()`
   crashes at startup if not.
 - `api.py` and `telco_model.py` must make the **same** decision: same model,
-  same threshold, same `>=` comparison. Divergence is silent.
+  same threshold, same `>=` comparison. Divergence is silent. **Neither path
+  rounds.** `/predict` reports the raw probability; rounding it to 4dp before
+  comparing would flag customers at 0.39995 that the batch script leaves
+  alone. `tests/test_api.py` pins this at the boundary.
 - Both must also **accept the same inputs**. `config.CATEGORICAL_DOMAINS` is
   the batch path's copy of `api.Customer`'s `Literal` types;
   `tests/test_input_validation.py` asserts they agree. The encoder uses
@@ -75,6 +79,11 @@ now 35, its "cell 38" is now 40).
 - The test set is touched once, after the threshold is locked. Threshold
   selection uses out-of-fold predictions (`cross_val_predict`), never a
   reused validation split.
+- `feature_schema_version` is a **gate**, not a label:
+  `config.SUPPORTED_FEATURE_SCHEMA_VERSION` must equal the string the notebook
+  stamps, or startup raises. Bump both together when `engineer_features()`
+  changes meaning without changing column names — the column check can't see
+  that case.
 - Retraining rewrites `model_metadata.json` — including `library_versions`,
   which `config.validate_environment_versions()` checks at every startup.
 - Missing-metadata policy, applied by all three `config.py` entry points:
@@ -152,6 +161,10 @@ number the README publishes. Check these, in order:
 
 ## Conventions
 
+- `make_preprocessor()` (cell 12) returns a **fresh** ColumnTransformer per
+  pipeline. Don't hoist it back to a shared object: `Pipeline.fit()` fits in
+  place, so one shared instance means fitting any pipeline silently re-fits
+  the scaler/encoder every other pipeline holds.
 - The tuner is `RandomizedSearchCV`, not Optuna. (`optuna`, `lightgbm` and
   `pyarrow` used to be declared in `pyproject.toml` and imported nowhere;
   they were removed when dependencies were split into groups.)

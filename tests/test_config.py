@@ -291,3 +291,46 @@ def test_validate_feature_schema_raises_readable_error_when_key_missing(tmp_path
     path.write_text(json.dumps({"threshold": 0.4}))
     with pytest.raises(RuntimeError, match="no 'feature_columns' field"):
         validate_feature_schema(str(path))
+
+
+# --- feature_schema_version (a mechanism now, not just a recorded string) ---
+
+def _metadata_with(tmp_path, **overrides):
+    """Real metadata with fields replaced, written to a temp file."""
+    with open(config.METADATA_PATH) as f:
+        data = json.load(f)
+    data.update(overrides)
+    path = tmp_path / "model_metadata.json"
+    path.write_text(json.dumps(data))
+    return str(path)
+
+
+def test_schema_version_mismatch_is_fatal(tmp_path):
+    """Same columns, different meaning is the case the column check cannot
+    see -- a corrected formula or changed unit keeps every name intact. The
+    declared version is the only signal, so a mismatch has to stop startup.
+    """
+    path = _metadata_with(tmp_path, feature_schema_version="2.0")
+    with pytest.raises(RuntimeError, match="Feature schema version mismatch"):
+        config.validate_feature_schema(path)
+
+
+def test_matching_schema_version_passes(tmp_path):
+    path = _metadata_with(
+        tmp_path, feature_schema_version=config.SUPPORTED_FEATURE_SCHEMA_VERSION
+    )
+    config.validate_feature_schema(path)
+
+
+def test_absent_schema_version_warns_but_still_checks_columns(tmp_path, capsys):
+    """An artifact predating the check should still be usable -- degrade to
+    the column comparison rather than refusing to start.
+    """
+    with open(config.METADATA_PATH) as f:
+        data = json.load(f)
+    data.pop("feature_schema_version", None)
+    path = tmp_path / "model_metadata.json"
+    path.write_text(json.dumps(data))
+
+    config.validate_feature_schema(str(path))
+    assert "feature_schema_version" in capsys.readouterr().out

@@ -3,8 +3,11 @@
   "model": "XGBoost (Tuned)",
   "cv_roc_auc_mean": 0.849141178092052,
   "cv_roc_auc_std": 0.017473991027652763,
-  "trained_at": "2026-08-23T11:09:26.552942+00:00",
-  "git_commit": "e93806115a123ff99a94d13c90cac0e168c5717d",
+  "cv_pr_auc_mean": 0.6642944952307156,
+  "cv_pr_auc_std": 0.03743798228430483,
+  "churn_rate_train": 0.2644230769230769,
+  "trained_at": "2026-08-23T15:44:40.081537+00:00",
+  "git_commit": "7c842fd36660c6fe275f058e5b4665b7ca5dc9db",
   "feature_schema_version": "1.0",
   "hash": "e509e674fc08e00ab0cc0b9bdc61fb26128e65c24d272ab9f68a7271c59f043e",
   "library_versions": {

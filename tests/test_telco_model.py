@@ -13,16 +13,7 @@ import pandas as pd
 import pytest
 
 import telco_model
-
-
-class DummyModel:
-    """Deterministic stand-in for the real XGBoost pipeline -- same pattern
-    as test_api.py's DummyModel. Always predicts a 0.8 churn probability,
-    good enough for testing the script's wiring, not model quality."""
-
-    def predict_proba(self, X):
-        n = len(X)
-        return np.column_stack([np.full(n, 0.2), np.full(n, 0.8)])
+from tests.conftest import DummyModel, _FakeJoblib
 
 
 RAW_CUSTOMER_ROW = {
@@ -53,7 +44,7 @@ def isolated_run(tmp_path, monkeypatch):
     monkeypatch.setattr(telco_model, "validate_feature_schema", lambda: None)
     monkeypatch.setattr(telco_model, "validate_environment_versions", lambda: None)
     monkeypatch.setattr(telco_model, "load_threshold", lambda: 0.5)
-    monkeypatch.setattr(telco_model.joblib, "load", lambda path: DummyModel())
+    monkeypatch.setattr(telco_model, "joblib", _FakeJoblib())
 
     return output_path
 
@@ -115,7 +106,7 @@ def test_main_raises_when_input_csv_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(telco_model, "validate_feature_schema", lambda: None)
     monkeypatch.setattr(telco_model, "validate_environment_versions", lambda: None)
     monkeypatch.setattr(telco_model, "load_threshold", lambda: 0.5)
-    monkeypatch.setattr(telco_model.joblib, "load", lambda path: DummyModel())
+    monkeypatch.setattr(telco_model, "joblib", _FakeJoblib())
 
     with pytest.raises(FileNotFoundError):
         telco_model.main()

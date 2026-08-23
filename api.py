@@ -117,17 +117,25 @@ def health():
 
 @app.post("/predict", response_model=PredictionResponse)
 def predict(customer: Customer):
-    if model is None:
+    # Both globals are needed below; checking only `model` would leave
+    # `probability >= threshold` to raise a TypeError and surface as a 500.
+    if model is None or threshold is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet.")
 
     row = pd.DataFrame([customer.model_dump()])
     row = engineer_features(row)
 
+    # Reported at full precision, and compared at full precision. Rounding
+    # the number that goes out while comparing the one that stayed behind
+    # would let a response read 0.4 >= 0.4 alongside "false"; rounding
+    # before the comparison instead would flag customers the batch scorer
+    # does not, since it compares raw probabilities. The two paths have to
+    # reach the same decision, so neither of them rounds.
     probability = float(model.predict_proba(row)[:, 1][0])
     flagged = probability >= threshold
 
     return PredictionResponse(
-        churn_probability=round(probability, 4),
+        churn_probability=probability,
         target_for_retention=flagged,
         threshold_used=threshold
     )

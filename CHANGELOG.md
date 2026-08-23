@@ -2316,3 +2316,132 @@ altered. What has *not* been verified is the cells actually executing: cell 40
 now references `cv_pr_auc`, which cell 25 defines, and that link only proves
 itself in a real top-to-bottom run. `model_metadata.json` therefore does not
 yet contain the new keys. Test suite: 153 passing. Committed.
+
+---
+
+## 2026-08-23 — make_preprocessor() factory, SHAP findings in the README, and the remaining cosmetic defects
+
+**Files touched:** `telco_customer_churn.ipynb` (cells 11, 12, 14, 18, 20, 26,
+30, 35, 40), `api.py`, `config.py`, `tests/conftest.py` (new),
+`tests/test_api.py`, `tests/test_config.py`, `tests/test_telco_model.py`,
+`simulated_new_customers.csv`, `README.md`, `CLAUDE.md`
+
+**What changed:** The last batch of known defects, worked through one at a
+time.
+
+*The shared preprocessor.* Cell 12 defined one `ColumnTransformer` and cells
+14, 18, 22 and 35 all embedded the same object. `Pipeline.fit()` fits its
+steps in place rather than cloning them, so that was one mutable object with
+four owners — fitting any pipeline silently re-fits the scaler and encoder the
+others hold. It produced no wrong number today, because the search and
+cross-validation utilities clone internally and every pipeline is refit before
+use. It was live purely as a trap: fit one pipeline on one slice, predict from
+another without refitting, and the answer comes from the wrong scaler with no
+error. Cell 12 is now a `make_preprocessor()` factory and each pipeline calls
+it.
+
+*The API's rounded probability.* `/predict` compared the raw probability
+against the threshold but reported it rounded to four places, so a score of
+0.39995 produced a response reading `churn_probability: 0.4`,
+`threshold_used: 0.4`, `target_for_retention: false` — self-contradictory to
+anyone reading it. The obvious repair is to round once and then compare, and
+that is what the defect list recommended. **That fix would have been wrong.**
+`telco_model.py` compares raw probabilities, so rounding before the comparison
+makes the API flag customers the batch script does not — turning a cosmetic
+inconsistency into a silent divergence between the two consumers, which is the
+one thing this project's invariants forbid. Fixed the other way instead: the
+response now reports the unrounded probability, so the number shown is the
+number decided on *and* both paths still agree. Five new parametrized tests
+pin the boundary.
+
+*The 503 guard* checked `model` but not `threshold`, so a loaded model with an
+unset threshold gave `probability >= None`, a TypeError, and a 500 instead of
+"not ready yet". It now checks both.
+
+*Test fakes.* `DummyModel` was duplicated verbatim in two test files with a
+comment noting the duplication. It now lives in a new `tests/conftest.py`
+alongside `_FakeJoblib`. The monkeypatching also changed: the tests patched
+`joblib.load` on the shared `joblib` module — `api.joblib is
+telco_model.joblib is joblib`, all one object, verified — so the patch reached
+every importer in the process. They now replace the module *reference* inside
+the one module under test.
+
+*Two numeric-hygiene fixes in the notebook.* The fine threshold grid used
+`np.arange(fine_low, fine_high, 0.01)`, which the defect list called half-open.
+It is worse than that: it is inconsistent. For the current window (0.35, 0.45)
+floating-point error happens to include the endpoint and yield 11 points; for
+(0.55, 0.65) it yields 10 and silently drops the top of the intended symmetric
+band. The grid is now built inclusively and rounded to 2dp, which gives 11
+points for every window and is identical to today's values for the current one.
+Separately, cell 30 matched a threshold with float `==`, safe only because both
+sides came from the same array; it now uses `np.isclose`, which is what makes
+it survive a round-trip through the metadata JSON.
+
+*`feature_schema_version` was written and never read* — an intention, not a
+mechanism. `config.SUPPORTED_FEATURE_SCHEMA_VERSION` now declares what the code
+implements and `validate_feature_schema()` refuses to start on a mismatch. This
+covers the case the column comparison structurally cannot see: same column
+names, different meanings, after a corrected formula or a changed unit. An
+artifact with no version declared warns and degrades to the column check, so
+older artifacts still load.
+
+*`config.py` imported scikit-learn and XGBoost at module level* purely to read
+two version strings, costing 559ms and 33ms of a 771ms `import config` paid by
+every consumer. It now reads an already-imported module's `__version__` when
+there is one and falls back to installed-distribution metadata otherwise. Both
+halves matter: the module attribute is the copy that will actually unpickle the
+artifact and wins if a shadowed install makes the two disagree, while the
+fallback is what removes the import. `import config` dropped to 226ms.
+
+*The sample CSV shipped 25 pre-engineered columns* rather than the 19 raw ones
+`telco_model.py`'s contract describes, because cell 11 overwrote `X_test` with
+its engineered form before cell 40 sampled it. The notebook now keeps
+`X_test_raw`, and the committed CSV was regenerated. It went unnoticed because
+`engineer_features()` is idempotent, so the wrong file worked.
+
+*`n_jobs=3` in cell 20* against `-1` everywhere else — a leftover, now `-1`.
+
+*The Interpretability section* was three lines describing the method and
+reporting no result, while the notebook produced a full beeswarm. It now
+carries the mean |SHAP| table for the top eight features and three findings:
+contract type dominates at 0.589, more than twice the next feature; the
+engineered `contractvstenure` ranks second overall, above raw `tenure`, which
+is the clearest evidence any engineered feature earned its place; and
+`onlinesecurity = No` plus `techsupport = No` together outweigh `tenure`,
+which matters because unlike contract or tenure those are things the business
+can hand someone — a concrete alternative to the flat discount the campaign
+currently models. That last point is flagged in the text as a correlational
+hypothesis worth an A/B test, not a finding.
+
+**Why:** Requested — the final worklist item before Docker.
+
+**Requested or incidental:** All requested. The new tests (five boundary tests,
+a 503 test, three schema-version tests) were not itemised in the request and
+are flagged as incidental; each one pins a behaviour changed here that nothing
+else asserted.
+
+**Verification status:** Test suite 162 passing, up from 153. The version gate
+still passes. Every claim above was measured rather than assumed: the shared
+`joblib` identity was confirmed at the interpreter (`api.joblib is
+telco_model.joblib is joblib` → True); the `np.arange` inconsistency was
+reproduced across five windows before and after the fix; the import cost was
+measured with `-X importtime` before and after; the CSV was regenerated and
+`telco_model.py` run end to end against it, flagging 15 of 50 customers; the
+SHAP figures come from `TreeExplainer` on the committed artifact over the real
+test split. The rounding divergence was demonstrated numerically before being
+fixed — at p=0.39995 and p=0.39996 the recommended fix disagrees with the batch
+path, at p=0.399949 it does not.
+
+Two caveats. The notebook cells changed here have **not** been executed —
+`make_preprocessor()`, the grid change, the `np.isclose` change and the
+`X_test_raw` change all need a full run to confirm, and the CSV was regenerated
+by a separate script that reproduces cell 40's sampling rather than by the
+notebook itself. Separately, the notebook *was* re-run by the user partway
+through this session, which is what populated `model_metadata.json` with the
+PR-AUC keys added earlier today; that run confirmed the previous entry's
+reconstruction exactly (`cv_pr_auc_mean` 0.6642944952307156 against a computed
+0.664294) and confirmed every PR-AUC figure the README publishes. It also
+moved the Logistic Regression row again — ROC-AUC 0.843903 → 0.843899, std
+0.018882 → 0.018893, accuracy 0.7758 → 0.7760, profit $26,200 → $26,220 — and
+the README was resynced to it, including a sentence that had claimed that row's
+profit never moves. Committed.

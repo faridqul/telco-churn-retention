@@ -12,16 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import api as api_module
-
-
-class DummyModel:
-    """Deterministic stand-in for the real XGBoost pipeline. Always
-    predicts a 0.8 churn probability, regardless of input -- good enough
-    for testing that the API wiring works, not for testing model quality."""
-
-    def predict_proba(self, X):
-        n = len(X)
-        return np.column_stack([np.full(n, 0.2), np.full(n, 0.8)])
+from tests.conftest import DummyModel, _FakeJoblib
 
 
 @pytest.fixture
@@ -40,7 +31,10 @@ def client(monkeypatch):
     at its root, not because these tests were actually isolated. Fixed
     here alongside adding the same isolation for validate_environment_
     versions()."""
-    monkeypatch.setattr(api_module.joblib, "load", lambda path: DummyModel())
+    # Patch the name as api.py sees it, not joblib.load itself:
+    # api.joblib, telco_model.joblib and joblib are all the same module
+    # object, so patching the attribute on it reaches every importer.
+    monkeypatch.setattr(api_module, "joblib", _FakeJoblib())
     monkeypatch.setattr(api_module, "load_threshold", lambda: 0.5)
     monkeypatch.setattr(api_module, "validate_feature_schema", lambda: None)
     monkeypatch.setattr(api_module, "validate_environment_versions", lambda: None)
@@ -104,3 +98,54 @@ def test_predict_rejects_negative_tenure(client):
     payload = {**VALID_PAYLOAD, "tenure": -1}
     response = client.post("/predict", json=payload)
     assert response.status_code == 422
+
+
+class _BoundaryModel:
+    """Returns one caller-chosen probability, so a test can sit exactly on
+    the knife edge where rounding would change a decision."""
+
+    def __init__(self, probability):
+        self.probability = probability
+
+    def predict_proba(self, X):
+        n = len(X)
+        return np.column_stack([np.full(n, 1.0 - self.probability),
+                                np.full(n, self.probability)])
+
+
+@pytest.mark.parametrize("probability", [0.39995, 0.39996, 0.399949, 0.4, 0.40001])
+def test_api_and_batch_agree_on_borderline_probabilities(monkeypatch, probability):
+    """The two consumers must reach the SAME decision for the same score.
+
+    This is the reason /predict reports an unrounded probability. Rounding
+    the score to 4dp before comparing it -- which would make the response
+    look tidier -- flags customers at 0.39995 that the batch script, which
+    compares raw probabilities, leaves alone. A divergence here is silent in
+    production: both paths return a confident answer, and they disagree.
+    """
+    threshold = 0.4
+    monkeypatch.setattr(api_module, "joblib",
+                        type("_J", (), {"load": staticmethod(lambda path: _BoundaryModel(probability))}))
+    monkeypatch.setattr(api_module, "load_threshold", lambda: threshold)
+    monkeypatch.setattr(api_module, "validate_feature_schema", lambda: None)
+    monkeypatch.setattr(api_module, "validate_environment_versions", lambda: None)
+
+    with TestClient(api_module.app) as test_client:
+        body = test_client.post("/predict", json=VALID_PAYLOAD).json()
+
+    batch_decision = bool(probability >= threshold)
+    assert body["target_for_retention"] is batch_decision
+    # And the number reported has to be the number decided on, or a reader
+    # of the response can derive a different answer than the service gave.
+    assert (body["churn_probability"] >= body["threshold_used"]) is batch_decision
+
+
+def test_predict_returns_503_when_threshold_is_missing(monkeypatch):
+    """The 503 guard has to cover both globals it depends on. With a model
+    but no threshold, `probability >= None` raises TypeError and the client
+    sees a 500 -- an unhandled crash rather than 'not ready yet'.
+    """
+    monkeypatch.setattr(api_module, "model", DummyModel())
+    monkeypatch.setattr(api_module, "threshold", None)
+    response = TestClient(api_module.app).post("/predict", json=VALID_PAYLOAD)
+    assert response.status_code == 503
