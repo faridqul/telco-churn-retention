@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import config
 from feature_engineering_telco import engineer_features
 
 
@@ -90,6 +91,52 @@ def test_is_auto_pay_flag(payment_method, expected):
     row = make_customer(paymentmethod=payment_method)
     result = engineer_features(row)
     assert result["is_auto_pay"].iloc[0] == expected
+
+
+def test_is_auto_pay_survives_an_entirely_blank_column():
+    """A CSV whose paymentmethod column is entirely empty reads back as
+    float64, and .str on a float column used to raise "Can only use .str
+    accessor with string values, not floating" -- an error naming pandas
+    internals rather than the actual problem.
+
+    na=False already covered *individual* missing values; this is the
+    whole-column dtype change. Both now degrade to is_auto_pay=0, which is
+    the consistent answer: an unknown payment method is not an automatic
+    one. The batch path rejects such a column earlier with a readable
+    message, but engineer_features() is imported by the notebook and the
+    API too, so it must not depend on its caller having validated first.
+    """
+    df = pd.DataFrame([dict(config.DUMMY_CUSTOMER) for _ in range(2)])
+    df["paymentmethod"] = np.nan
+    result = engineer_features(df)
+    assert result["is_auto_pay"].tolist() == [0, 0]
+
+
+@pytest.mark.parametrize(
+    "column_values, expected",
+    [
+        (pd.array(["Mailed check", "Credit card (automatic)"], dtype="string"), [0, 1]),
+        (pd.Categorical(["Mailed check", "Credit card (automatic)"]), [0, 1]),
+        ([np.nan, "Credit card (automatic)"], [0, 1]),
+    ],
+    ids=["StringDtype", "categorical", "one-missing-among-strings"],
+)
+def test_is_auto_pay_handles_non_object_dtypes(column_values, expected):
+    """astype('string') has to leave the ordinary cases alone. A CSV read
+    with pyarrow-backed strings, or a column that has been made categorical
+    upstream, must give the same answer as a plain object column."""
+    df = pd.DataFrame([dict(config.DUMMY_CUSTOMER) for _ in range(2)])
+    df["paymentmethod"] = column_values
+    assert engineer_features(df)["is_auto_pay"].tolist() == expected
+
+
+def test_is_auto_pay_on_an_empty_frame():
+    """Zero rows must still produce the column, not raise -- the schema
+    contract is 25 columns regardless of row count."""
+    df = pd.DataFrame([dict(config.DUMMY_CUSTOMER)]).iloc[0:0]
+    result = engineer_features(df)
+    assert result["is_auto_pay"].tolist() == []
+    assert len(result.columns) == 25
 
 
 # ---------------------------------------------------------------------------

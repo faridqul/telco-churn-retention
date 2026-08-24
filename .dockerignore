@@ -1,0 +1,54 @@
+# Build context exclusions. The single most important line here is `.venv`:
+# it is 1.2 GB on a dev machine, and without this file every `docker build`
+# would upload all of it to the daemon before running the first instruction.
+#
+# The image installs its dependencies from pyproject.toml + uv.lock, so
+# nothing that only exists to *produce* the model or *test* it belongs in
+# the context.
+
+# Local virtualenv -- deps come from uv.lock, not from a copied venv.
+.venv/
+venv/
+
+# Git history. Nothing in the image reads it; model_metadata.json already
+# records the git_commit the artifact was trained at.
+.git/
+.gitignore
+.github/
+
+# Training-only. The notebook is 1.3 MB (it stores plot images) and needs
+# the `notebook` dependency group, which the image deliberately does not
+# install.
+telco_customer_churn.ipynb
+.ipynb_checkpoints/
+
+# Tests. The image is built with `uv sync --no-dev`, so there is no pytest
+# in it to run them with.
+tests/
+
+# Docs and local notes. CLAUDE.md is assistant guidance for working on this
+# repo -- it has no business in a build context, let alone an image.
+README.md
+CHANGELOG.md
+CLAUDE.md
+AUDIT.md
+LICENSE
+
+# Regenerated on every scoring run; the container writes its own.
+retention_campaign_targets.csv
+
+# Python / tooling clutter.
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.uv/
+
+# OS / editor clutter.
+.DS_Store
+.vscode/
+.idea/
+
+# Docker's own files.
+Dockerfile
+.dockerignore

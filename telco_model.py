@@ -1,3 +1,5 @@
+import os
+
 import joblib
 import pandas as pd
 
@@ -6,11 +8,17 @@ from config import (
     load_threshold,
     validate_environment_versions,
     validate_feature_schema,
+    validate_input_frame,
 )
 from feature_engineering_telco import engineer_features
 
-INPUT_PATH = "simulated_new_customers.csv"
-OUTPUT_PATH = "retention_campaign_targets.csv"
+# Overridable per-environment, the same way config.py handles MODEL_PATH and
+# METADATA_PATH. The defaults are the repo-relative files, so running this
+# straight after a clone is unchanged. The override is what makes the batch
+# path usable in a container without a code change: the image ships the
+# script and the artifact, and the data arrives on a mounted volume.
+INPUT_PATH = os.environ.get("INPUT_PATH", "simulated_new_customers.csv")
+OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "retention_campaign_targets.csv")
 
 
 def main():
@@ -24,6 +32,14 @@ def main():
 
     print("Loading new customer data...")
     new_customers = pd.read_csv(INPUT_PATH)
+
+    # api.py gets this from Pydantic; without it here a CSV with an unknown
+    # category scores end to end with no error and a silently different
+    # answer, because the OneHotEncoder ignores unknown values rather than
+    # raising. Runs before feature engineering so the row numbers reported
+    # still line up with the input file.
+    print("Validating input...")
+    validate_input_frame(new_customers)
 
     print("Engineering features...")
     new_customers = engineer_features(new_customers)

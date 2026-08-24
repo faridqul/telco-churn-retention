@@ -7,28 +7,39 @@ authors = [
     { name = "yaponskihue", email = "faridlvrl@gmail.com" }
 ]
 requires-python = ">=3.12"
+# Everything needed to SERVE a prediction: load the pickled pipeline, build
+# the engineered features, and answer a request. Nothing here is only used
+# for training or plotting. This is the set a production image installs, so
+# adding to it has a direct cost in image size and attack surface.
 dependencies = [
     "fastapi>=0.141.1",
     "joblib>=1.5.3",
-    "jupyter>=1.1.1",
-    "kagglehub>=1.0.2",
-    "lightgbm>=4.7.0",
-    "matplotlib>=3.11.1",
     "numpy>=2.5.2",
-    "optuna>=4.9.0",
     "pandas>=3.0.5",
-    "pyarrow>=25.0.1",
     "scikit-learn>=1.9.0",
-    "seaborn>=0.13.2",
-    "shap>=0.52.0",
     "uvicorn>=0.52.3",
     "xgboost>=3.4.1",
 ]
 
 [dependency-groups]
+# Installed by default by `uv sync`, which is what CI relies on: the test
+# suite needs the runtime set plus these two and nothing else. httpx is not
+# imported directly -- it is what fastapi's TestClient runs on.
 dev = [
     "pytest>=8.0.0",
     "httpx>=0.27.0",
+]
+
+# Only needed to RE-TRAIN the model by running the notebook. Not installed by
+# default, so neither CI nor a production image pays for a Jupyter and
+# plotting stack to score a customer. Install with `uv sync --group notebook`.
+notebook = [
+    "jupyter>=1.1.1",
+    "kagglehub>=1.0.2",
+    "matplotlib>=3.11.1",
+    "scipy>=1.18.0",
+    "seaborn>=0.13.2",
+    "shap>=0.52.0",
 ]
 
 [build-system]
