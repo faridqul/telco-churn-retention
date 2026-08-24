@@ -3465,3 +3465,52 @@ with `gh run view <run> --job <job> --log` and counted per run; the two
 (`gha:6178796840260627049` and `gha:1873493280279772642`), confirming the
 second read a scope the first had populated. All four runs concluded
 `success`. Documentation only; no code changed.
+
+---
+
+## 2026-08-24 — Bump the four GitHub Actions off the deprecated Node.js 20 runtime
+
+**Files touched:**
+- `.github/workflows/tests.yml` (four `uses:` pins raised to their current
+  major versions; `actions/checkout` appears twice, once per job)
+
+**What changed:** Every run of this workflow was carrying a GitHub annotation:
+"Node.js 20 is deprecated. The following actions target Node.js 20 but are
+being forced to run on Node.js 24." All four pinned actions were affected —
+two of them (`checkout`, `setup-uv`) in the pre-existing `test` job, two
+(`setup-buildx-action`, `build-push-action`) in the `docker` job added earlier
+today.
+
+| action | was | now |
+|---|---|---|
+| `actions/checkout` | v4 | **v7** |
+| `astral-sh/setup-uv` | v5 | **v10** |
+| `docker/setup-buildx-action` | v3 | **v4** |
+| `docker/build-push-action` | v6 | **v7** |
+
+Two of these are large jumps, so rather than bumping blind I read each action's
+current `action.yml` and confirmed every input this workflow passes still
+exists: `enable-cache` and `cache-dependency-glob` for `setup-uv`, and
+`context`, `load`, `tags`, `cache-from`, `cache-to` for `build-push-action`.
+`checkout` and `setup-buildx-action` are used with no inputs at all here, so
+there was nothing to break.
+
+Nothing about the workflow's behaviour changed — same jobs, same steps, same
+assertions. This is purely getting off a runtime GitHub has already begun
+force-migrating.
+
+**Why:** Requested. The annotation was flagged as non-blocking when the
+`docker` job first ran green, and you asked for it to be cleared. Worth doing
+promptly rather than waiting: GitHub is currently force-running these on Node
+24 anyway, so the pinned versions were already not running on the runtime they
+were built against.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Verified on GitHub — the only place these can be
+verified, since the versions are resolved by the Actions runner and nothing
+about them is exercisable locally. Done on a branch rather than pushed
+straight to `main`, so an incompatibility would not have turned `main` red.
+Local pre-checks first: YAML re-parsed (`test` 6 steps, `docker` 8 steps) and
+each action's inputs cross-checked against its current `action.yml`. CI result
+recorded in the entry that follows this one.
