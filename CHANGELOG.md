@@ -3514,3 +3514,69 @@ straight to `main`, so an incompatibility would not have turned `main` red.
 Local pre-checks first: YAML re-parsed (`test` 6 steps, `docker` 8 steps) and
 each action's inputs cross-checked against its current `action.yml`. CI result
 recorded in the entry that follows this one.
+
+---
+
+## 2026-08-24 — Correction: `setup-uv@v10` does not resolve; the right pin is v7
+
+**Files touched:**
+- `.github/workflows/tests.yml` (`astral-sh/setup-uv` corrected from `@v10` to
+  `@v7`, with a comment explaining why it is not the newest release)
+
+**What changed:** The bump in the previous entry set `astral-sh/setup-uv@v10`,
+taken from `gh api repos/astral-sh/setup-uv/releases/latest`, which reports
+`v10.0.1`. CI rejected it outright:
+
+```
+Unable to resolve action `astral-sh/setup-uv@v10`, unable to find version `v10`
+```
+
+The mistake was assuming a repository's newest *release* implies a matching
+floating *major tag*. It does not, and this repository is a case where they
+diverge: `astral-sh/setup-uv` publishes bare major tags only up to `v7`
+(`v1`…`v7`) while its releases run to `v10.0.1`. So `@v10` names a tag that has
+never existed.
+
+Corrected to `@v7`, which is the right answer for a reason beyond mere
+resolvability — the entire purpose of the bump was escaping the deprecated Node
+20 runtime, and `runs.using` per version is:
+
+| version | runtime |
+|---|---|
+| v5 (before) | `node20` |
+| **v7 (now)** | **`node24`** |
+| v10.0.1 | `node24` |
+
+v7 already clears the deprecation, keeps the floating-major convention the
+other three pins use, and continues to receive patch updates within v7 — where
+pinning `v10.0.1` would have frozen an exact version. Both inputs this workflow
+passes, `enable-cache` and `cache-dependency-glob`, were confirmed present in
+v7's `action.yml`.
+
+Worth recording that the failure was cheap because the bump went to a branch
+rather than to `main`: the red run was on `ci/bump-action-versions`, and `main`
+stayed green throughout.
+
+**Why:** A wrong pin that broke CI. Also worth writing down as a general trap —
+`releases/latest` is not a safe source for an action pin; the tag has to be
+confirmed to exist.
+
+**Requested or incidental:** Incidental — a correction to my own error in the
+previous entry.
+
+**Correction to an earlier entry:** the entry titled "Bump the four GitHub
+Actions off the deprecated Node.js 20 runtime" lists `astral-sh/setup-uv` going
+to **v10**. That pin does not resolve and never ran. The correct value is
+**v7**; the other three rows in that entry's table (`checkout@v7`,
+`setup-buildx-action@v4`, `build-push-action@v7`) are right and were confirmed
+green. Per the append-only rule that entry stands as written and this
+supersedes it.
+
+**Verification status:** The failing run is
+[32766852431](https://github.com/faridqul/telco-churn-retention/actions/runs/32766852431)
+— `test` failed at "Set up job" in 3s with the unresolved-action error, while
+`docker` **passed in 35s**, which is what isolated the fault to `setup-uv`
+alone and confirmed the other three bumps were fine. All four tags were then
+verified to exist via `gh api .../git/ref/tags/<tag>`, and each action's
+`runs.using` was read to confirm node24. Post-fix CI result recorded in the
+entry that follows.

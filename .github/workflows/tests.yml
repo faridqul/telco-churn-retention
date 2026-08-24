@@ -18,7 +18,10 @@ jobs:
       # uv.lock. First run is a cold install; later ones skip re-downloading
       # xgboost/scikit-learn/shap, which are the slow part.
       - name: Install uv
-        uses: astral-sh/setup-uv@v10
+        # v7 rather than the newest release (v10.0.1): this action only
+        # publishes floating major tags up to v7, so @v10 does not resolve.
+        # v7 already runs on node24, which is the point of the bump.
+        uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
