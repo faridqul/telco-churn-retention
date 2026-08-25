@@ -145,7 +145,7 @@ Sensitivity to the minority class cuts both ways — there are simply fewer
 positives for each fold's estimate to rest on.
 
 **Model comparison** — XGBoost, Logistic Regression, and Random Forest
-converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843903 /
+converge to statistically indistinguishable ROC-AUC (0.845812 / 0.843894 /
 0.844126, each well within one standard deviation of the others). Rather than
 read this as "the model choice didn't matter," I read it as evidence the
 dataset itself has an information ceiling around ROC-AUC ≈ 0.845 — churn here
@@ -189,7 +189,7 @@ threshold (same method as XGBoost's: a scan over 5-fold OOF predictions on
 |---|---|---|---|---|---|---|
 | XGBoost (Tuned) | 0.845812 | 0.019575 | 0.6603 | 0.40 | 0.7876 | 26,640 |
 | Random Forest | 0.844126 | 0.016803 | 0.6532 | 0.58 | 0.7810 | 27,000 |
-| Logistic Regression | 0.843903 | 0.018885 | 0.6551 | 0.62 | 0.7869 | 26,240 |
+| Logistic Regression | 0.843894 | 0.018894 | 0.6548 | 0.62 | 0.7867 | 26,200 |
 
 PR-AUC is computed on the same out-of-fold predictions as the threshold and
 profit columns, so every column shares one basis. Note it **reorders the two
@@ -204,20 +204,27 @@ reported, not optimized, because changing the search metric would change
 which model ships and that is a different decision from measuring one more
 thing.
 
-*The Logistic Regression row is the one number here that does not reproduce
-exactly between runs, and it is worth knowing why before reading anything into
-it. Its search now varies `l1_ratio` (1.0 is pure L1, 0.0 is pure L2) instead
-of scikit-learn's deprecated `penalty` argument, which is removed in 1.10 —
-the same two options, same budget, same seed. But this model's ROC-AUC surface
-is genuinely flat, so the winning `C` slides between near-tied draws from one
-run to the next, and the best threshold follows it: this row has legitimately
-produced both 0.58 and 0.62 — this run is a 0.62 — with accuracy between
-0.7758 and 0.7869, while
-ROC-AUC moves only in the fifth decimal (0.843891 – 0.843903) — a spread three
-orders of magnitude below its own 0.019 fold-to-fold std. Profit tracks the
-threshold across a $40 range ($26,200–$26,240) and the ordering never changes.
-The figures above are from the committed notebook run. The XGBoost and Random
-Forest rows are stable.*
+*For several runs this row refused to reproduce: its best threshold alternated
+between 0.58 and 0.62, accuracy between 0.7758 and 0.7869, profit between
+$26,200 and $26,240, while ROC-AUC moved in the fifth decimal. It was written
+off as an inherently flat optimisation surface. That was the wrong diagnosis,
+and the right one is worth recording.*
+
+*`LogisticRegression` was the only one of the three estimators without a
+`random_state`. Nothing about it looks stochastic — but with
+`solver='liblinear'`, scikit-learn uses `random_state` to shuffle the data, so
+an unseeded estimator scores the **same** candidate differently on every run.
+Measured spread across five runs at a fixed `C`: 2.3e-05, versus 0.0 once
+seeded. And the top five candidates in this search sit within 1.0e-05 of each
+other — half the noise. The argmax was selecting noise, a different `C` won
+each time, and the profit-optimal threshold followed it. The flat surface was
+real; it was the amplifier, not the cause.*
+
+*Seeded now, matching XGBoost and Random Forest, both of which carried
+`random_state=42` from the start. The row is reproducible. The lesson
+generalises past this project: an unseeded estimator inside a seeded search is
+not obviously wrong when you read it, and only shows up as numbers that will
+not sit still.*
 
 Random Forest edges out XGBoost on profit here (\$27,000 vs. \$26,640), but at
 a ROC-AUC gap of just 0.0017 — an order of magnitude smaller than the ~0.02
@@ -239,13 +246,11 @@ model — the notebook asserts this rather than assuming it.
 | Pair | p (5 folds) | p (25 folds) | Mean diff (25 folds) |
 |---|---|---|---|
 | XGBoost vs Random Forest | 0.6250 | **0.0003** | +0.0023 |
-| XGBoost vs Logistic Regression | 0.4375 | 0.1135 | +0.0016 |
+| XGBoost vs Logistic Regression | 0.4375 | 0.1073 | +0.0016 |
 | Logistic Regression vs Random Forest | 1.0000 | 0.6528 | +0.0006 |
 
-The XGBoost-vs-Logistic-Regression p inherits that row's known run-to-run
-wobble — 0.1135, 0.1073, 0.1135 across three runs. It is nowhere near 0.05
-any of those times.
-The XGBoost-vs-Random-Forest result reproduced at 0.0003 in both.
+Both columns are now reproducible run to run — see the note on seeding above.
+The XGBoost-vs-Random-Forest result reproduced at 0.0003 across four runs.
 
 **The 5-fold column is worthless, and that is worth saying.** With 5 pairs
 there are 2⁵ = 32 equally likely sign patterns under the null, so the smallest
@@ -271,9 +276,8 @@ under 0.0167, but it is not the clean independent-sample number it looks
 like.
 
 The more interesting pattern is the **threshold split**: XGBoost's optimum
-(0.40) sits well below Random Forest's (0.58) and Logistic Regression's (0.62
-in this run; it alternates with 0.58 between runs, see the note above). This is
-a real, structural effect, not a coincidence: boosted trees
+(0.40) sits well below Random Forest's (0.58) and Logistic Regression's (0.62).
+This is a real, structural effect, not a coincidence: boosted trees
 build up probability estimates additively across rounds, which tends to push
 them toward the extremes (more separated between classes), while averaging
 many trees (Random Forest) or fitting a single smooth sigmoid (Logistic

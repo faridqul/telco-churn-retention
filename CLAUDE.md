@@ -168,16 +168,24 @@ number the README publishes. Check these, in order:
    this file, substituting `c.get('outputs')`. The figures the README
    publishes live in cells 26 and 30–33 (Results table), 27 (sensitivity
    sweep), 29 (calibration) and 35 (model comparison).
-4. **Watch the Logistic Regression row in cell 35 specifically.** Its ROC-AUC
-   surface is flat, so the winning `C` — and therefore its best threshold —
-   slides between near-tied draws from run to run. It has legitimately been
-   both 0.58 and 0.62. Never publish that row from anything but a real run.
+4. **The Logistic Regression row used to drift every run; it is fixed now.**
+   `LogisticRegression` was the only estimator without a `random_state`, and
+   `solver='liblinear'` uses it to shuffle the data — so the same candidate
+   scored differently each run (spread 2.3e-05) while the top five candidates
+   sat within 1.0e-05 of each other. The argmax picked noise, `C` changed, and
+   the threshold followed between 0.58 and 0.62. Seeded as of 2026-08-25, so
+   the row should now be byte-stable. **If it moves again, something else is
+   unseeded — don't write it off as a flat surface a second time.**
 5. **Check the prose, not just the tables.** The threshold-split paragraph in
    the README quotes per-model thresholds inline and has gone stale this way
    before.
 
 ## Conventions
 
+- **Every estimator in a search needs its own `random_state`.** Seeding
+  `RandomizedSearchCV` only fixes which candidates get sampled, not how each
+  one is fit. `liblinear`, `sag`, `saga` and both tree ensembles all use it.
+  This cost three rounds of README corrections before it was found.
 - `make_preprocessor()` (cell 12) returns a **fresh** ColumnTransformer per
   pipeline. Don't hoist it back to a shared object: `Pipeline.fit()` fits in
   place, so one shared instance means fitting any pipeline silently re-fits

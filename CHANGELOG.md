@@ -3722,3 +3722,72 @@ Worth noting for future runs: the significance conclusion is the stable part
 here, and the Logistic Regression row is the unstable part. Anything written
 about that row should be phrased as a range or explicitly dated to a run, which
 is what has now had to be corrected three separate times.
+
+---
+
+## 2026-08-25 — Root-caused the Logistic Regression drift: a missing random_state
+
+**Files touched:** `telco_customer_churn.ipynb` (cell 35), `README.md`,
+`CLAUDE.md`
+
+**What changed:** The user asked why the Logistic Regression row changes every
+run when the other two do not. The answer turned out to be a real defect, and
+the explanation this project had been repeating for weeks was wrong.
+
+The README said the row was inherently unstable: a flat ROC-AUC surface, so the
+winning `C` slides between near-tied draws. That describes the amplifier, not
+the cause, and it never explained the actual puzzle — everything in the search
+is seeded, so nothing should have moved at all.
+
+`LogisticRegression` was the only one of the three estimators constructed
+without a `random_state`. `XGBClassifier(random_state=42)` and
+`RandomForestClassifier(..., random_state=42)` both had one from the start.
+Nothing about logistic regression looks stochastic, which is exactly why it
+went unnoticed — but with `solver='liblinear'`, scikit-learn uses
+`random_state` to shuffle the data, so an unseeded estimator scores the *same*
+candidate differently on every fit. Seeding `RandomizedSearchCV` does not help:
+that only fixes which 200 candidates get sampled, not how each one is fit.
+
+Both halves of the mechanism were measured. Fitting one fixed `C` five times
+unseeded gives five different CV scores with a spread of 2.3e-05; seeded, it
+gives the identical value five times out of five. Meanwhile the top five
+candidates in the real search sit within 1.0e-05 of each other — half the
+noise. So the argmax was selecting noise: a different `C` won each run, its
+probabilities were calibrated slightly differently, and the profit-optimal
+threshold followed between 0.58 and 0.62, dragging accuracy and profit with it.
+
+Cell 35 now passes `random_state=42`, with a comment explaining why an
+apparently deterministic estimator needs one. The README's instability
+footnote was rewritten: it now states the old diagnosis was wrong, gives the
+measured numbers, and notes the flat surface was the amplifier rather than the
+cause. CLAUDE.md's post-re-run checklist item 4 changes from "watch this row,
+it drifts" to "it is fixed — if it moves again, something else is unseeded,
+don't write it off as a flat surface a second time", and a new convention
+records that every estimator in a search needs its own seed.
+
+**Why:** Asked directly. It also ends a recurring maintenance cost — this row
+forced README corrections after three separate notebook runs.
+
+**Requested or incidental:** The question was asked; the fix was not explicitly
+requested and is flagged as incidental. It was applied rather than only
+reported because the row's numbers change on every run regardless, so seeding
+does not destabilise anything that was stable — it stabilises something that
+never was.
+
+**Verification status:** Executed. The unseeded-vs-seeded comparison was run
+directly (five repetitions each). The seeded search was then run in full to
+obtain the row rather than predicting it: ROC-AUC 0.843894, std 0.018894,
+PR-AUC 0.654827, best threshold 0.62, accuracy 0.7867, profit $26,200 — and
+the winning `C` is 6.1265. The significance appendix was re-run seeded: XGBoost
+vs Random Forest holds at p = 0.0003 (fourth independent reproduction) and
+XGBoost vs Logistic Regression settles at 0.1073, which should now be stable
+rather than alternating with 0.1135. XGBoost's and Random Forest's rows
+reproduced unchanged, confirming the seed reaches only the intended estimator.
+Tests 166 passing.
+
+**Important caveat:** the README now carries seeded figures while the
+notebook's stored outputs are still from the last unseeded run, so the two
+disagree until the notebook is re-run. This is deliberate — the seeded values
+are measured, not predicted, using the notebook's exact configuration — but if
+a re-run does *not* reproduce ROC-AUC 0.843894 and threshold 0.62 exactly, that
+is a real signal and should be investigated rather than papered over.
