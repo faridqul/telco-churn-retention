@@ -220,9 +220,53 @@ Forest rows are stable.*
 
 Random Forest edges out XGBoost on profit here (\$27,000 vs. \$26,640), but at
 a ROC-AUC gap of just 0.0017 — an order of magnitude smaller than the ~0.02
-fold-to-fold CV std above — this \$360 (1.3%) difference isn't distinguishable
-from noise without a proper significance test (see Known limitations). It
-isn't a reason to switch models.
+fold-to-fold CV std above. That gap is *not* noise: a paired Wilcoxon over 25
+repeated CV folds separates the two at p = 0.0003 (appendix below). But
+detectable is not the same as material. The effect is +0.0023 ROC-AUC, a sixth
+of one fold's standard deviation, and it points the wrong way for the metric
+that pays: Random Forest wins on profit while losing on ROC-AUC. So it still
+isn't a reason to switch models — now for a measured reason rather than an
+assumed one.
+
+### Are the model differences significant?
+
+Paired Wilcoxon signed-rank on per-fold CV ROC-AUC. The pairing is sound: all
+three searches ran the same `StratifiedKFold(shuffle=True, random_state=42)`
+over the same `X_tr`/`y_tr`, so fold *k* is the identical split for every
+model — the notebook asserts this rather than assuming it.
+
+| Pair | p (5 folds) | p (25 folds) | Mean diff (25 folds) |
+|---|---|---|---|
+| XGBoost vs Random Forest | 0.6250 | **0.0003** | +0.0023 |
+| XGBoost vs Logistic Regression | 0.4375 | 0.1073 | +0.0016 |
+| Logistic Regression vs Random Forest | 1.0000 | 0.6528 | +0.0006 |
+
+The XGBoost-vs-Logistic-Regression p inherits that row's known run-to-run
+wobble — 0.107 and 0.114 across two runs. It is nowhere near 0.05 either way.
+The XGBoost-vs-Random-Forest result reproduced at 0.0003 in both.
+
+**The 5-fold column is worthless, and that is worth saying.** With 5 pairs
+there are 2⁵ = 32 equally likely sign patterns under the null, so the smallest
+two-sided p the test can return is 2/32 = **0.0625**. No 5-fold result can
+ever clear 0.05. Reporting "not significant" from it would have been a
+statement about the sample size dressed up as a statement about the models.
+The 25-fold column comes from 5×5 repeated CV on the same tuned estimators,
+which has the power the 5-fold version structurally lacks.
+
+**Result: one pair separates.** XGBoost beats Random Forest at p = 0.0003,
+comfortably past the Bonferroni threshold of 0.0167 for three comparisons.
+The other two pairs do not. So the blanket "information ceiling" reading needs
+qualifying: the models are not interchangeable, and the difference between the
+best and worst here is measurable.
+
+It is also **too small to act on**: +0.0023 ROC-AUC is a sixth of one fold's
+own standard deviation, and Random Forest still earns more campaign profit
+than XGBoost at its own threshold. The practical conclusion survives; the
+reasoning behind it was wrong. One caveat kept in view: repeated CV reuses
+overlapping training data, so these p-values are optimistic in the
+Nadeau–Bengio sense — p = 0.0003 has room to be wrong by a lot and still be
+under 0.0167, but it is not the clean independent-sample number it looks
+like.
 
 The more interesting pattern is the **threshold split**: XGBoost's optimum
 (0.40) sits well below Random Forest's and Logistic Regression's (both 0.58 in
@@ -766,12 +810,16 @@ and a sane default beats an outage.
   `success_rate` are still hardcoded placeholders, not measured values, and
   remain the single biggest source of uncertainty in the whole pipeline —
   bigger than model choice.
-- **Model comparison has no formal significance test.** The ROC-AUC and
-  profit gaps between XGBoost, Random Forest, and Logistic Regression (see
-  above) are all smaller than the ~0.02 fold-to-fold CV std — "probably not
-  distinguishable from noise" by eye, but never actually tested. A paired
-  Wilcoxon signed-rank test on the per-fold CV scores (`cv_results_` already
-  has these) would turn that into a real yes/no instead of an eyeball call.
+- **The model gaps were tested, and one of them is real** — see the
+  significance appendix. XGBoost beats Random Forest on ROC-AUC at
+  p = 0.0003, which survives Bonferroni correction for the three pairwise
+  comparisons. That contradicts the earlier eyeball call of "all noise", so
+  it is recorded here rather than quietly dropped. It does not change the
+  recommendation: the effect is +0.0023 ROC-AUC, about a sixth of one fold's
+  own standard deviation, and Random Forest still returns more campaign
+  profit ($27,000 vs. $26,640) at its own threshold. A difference can be
+  reliably detectable and still be too small to act on — that is the
+  distinction the original note was missing in both directions.
 - No auth on the API — fine for a local demo, not for anything exposed
   publicly.
 - No monitoring or drift detection — churn drivers shift over time in

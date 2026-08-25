@@ -3580,3 +3580,84 @@ alone and confirmed the other three bumps were fine. All four tags were then
 verified to exist via `gh api .../git/ref/tags/<tag>`, and each action's
 `runs.using` was read to confirm node24. Post-fix CI result recorded in the
 entry that follows.
+
+---
+
+## 2026-08-24 — Formal significance test for the model comparison
+
+**Files touched:** `telco_customer_churn.ipynb` (cell 35 modified; cells 51–52
+appended), `README.md`, `CLAUDE.md`
+
+**What changed:** The README's Known-limitations list said the ROC-AUC and
+profit gaps between the three models had been judged "probably noise" by eye
+and never tested. They are tested now, and the result does not fully support
+what the eye said.
+
+Before writing anything I checked whether a paired test was even legitimate.
+It is: XGBoost's search (cell 22) and the Logistic Regression and Random
+Forest searches (cell 35) all pass the same `cv_strategy` object and both fit
+on `X_tr`/`y_tr`, and `StratifiedKFold(shuffle=True, random_state=42)` returns
+identical fold indices on repeated calls — verified by generating the splits
+twice and comparing, not assumed. Fold *k* is therefore the same split for
+every model. The new cell asserts this at runtime rather than relying on the
+reader to trust it.
+
+Cell 35 previously kept only `best_estimator_` for each model, so
+`cv_results_` died with the search object and the per-fold scores were
+unreachable downstream. It now also stores `cv_fold_scores`.
+
+The appendix was **appended** as cells 51–52 rather than inserted next to the
+comparison table. Inserting would have shifted every index above it, and that
+has already silently broken CLAUDE.md's cell map twice in this project's
+history. Narrative adjacency was not worth a third occurrence.
+
+**The finding.** The requested test — Wilcoxon on the 5 `cv_results_` folds —
+returns p = 0.6250, 0.4375 and 1.0000 for the three pairs. Those numbers are
+uninformative, and the cell says so explicitly: with 5 pairs there are 2⁵ = 32
+equally likely sign patterns under the null, so the smallest two-sided p the
+test can return is 2/32 = 0.0625. **No 5-fold result can ever reach p < 0.05.**
+Reporting "not significant" from it would have been a fact about the sample
+size presented as a fact about the models. That is a limitation of the test as
+specified, not of the data, so the cell adds a companion with actual power:
+5×5 repeated stratified CV over the same tuned estimators, 25 paired folds.
+
+There, **XGBoost beats Random Forest at p = 0.0003** — past the Bonferroni
+threshold of 0.0167 for three comparisons, and reproduced at 0.0003 in two
+independent runs. The other two pairs do not separate (0.1073 and 0.6528).
+
+So the blanket "information ceiling / it's all noise" reading is wrong as
+stated. The models are distinguishable. What survives is the *practical*
+conclusion, for a better reason than before: the effect is +0.0023 ROC-AUC,
+about a sixth of one fold's own standard deviation, and it points the wrong
+way for the metric that pays — Random Forest earns $27,000 of campaign profit
+against XGBoost's $26,640 while losing on ROC-AUC. Detectable and material are
+different things, and the original note conflated them in both directions.
+
+**Why:** Requested — closing the "no formal significance test" item.
+
+**Requested or incidental:** The test, the README update and the CHANGELOG
+entry were requested. Storing `cv_fold_scores` in cell 35 is incidental but
+unavoidable — the test cannot reach the data otherwise. The repeated-CV
+companion was not requested; it is flagged as incidental and was added because
+delivering only a test that cannot reject would have answered the question
+with a number that means nothing.
+
+The limitations item was **not** deleted. The instruction allowed removing it
+if the test supported the existing conclusion; it partly did not, so the item
+is rewritten to record that one pair is genuinely significant. Quietly deleting
+it would have buried the one result that contradicted the prior claim.
+
+**Verification status:** Executed, twice. The pairing check was run directly.
+The p-values come from real searches reproducing the notebook's own
+configuration — XGBoost's mean CV ROC-AUC came back 0.845812, matching the
+published figure exactly, and Random Forest's 0.844126, likewise. Cell 52 was
+then executed **verbatim from the notebook source** against reconstructed
+objects and completed without error, producing the same conclusions. The one
+number that moved between runs is the XGBoost-vs-Logistic-Regression p (0.1135
+then 0.1073), which is that row's documented instability; the README quotes the
+cell's own value and flags the range. Tests: 166 passing.
+
+Not yet done: the notebook has not been re-run end to end, so cells 51–52 carry
+no stored output and `cv_fold_scores` is not yet populated in a saved run. The
+cell was proven to execute, but its output in the committed notebook will be
+empty until the next full run.
