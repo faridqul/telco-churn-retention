@@ -3661,3 +3661,64 @@ Not yet done: the notebook has not been re-run end to end, so cells 51–52 carr
 no stored output and `cv_fold_scores` is not yet populated in a saved run. The
 cell was proven to execute, but its output in the committed notebook will be
 empty until the next full run.
+
+---
+
+## 2026-08-25 — Notebook re-run: significance appendix confirmed, LR row flipped to 0.62
+
+**Files touched:** `README.md` (plus `model_metadata.json` and
+`telco_customer_churn.ipynb`, rewritten by the user's run)
+
+**What changed:** The user re-ran the notebook cold — execution counts 1 through
+40, no gaps — which populates the significance appendix added yesterday and
+closes the "no stored output" caveat on it.
+
+The appendix reproduces exactly what the standalone harness produced: the
+5-fold test returns 0.6250 / 0.4375 / 1.0000 with the 0.0625 floor printed
+beside them, and the 25-fold companion returns **p = 0.0003 for XGBoost vs
+Random Forest**, 0.1135 for XGBoost vs Logistic Regression and 0.6528 for
+Random Forest vs Logistic Regression. The headline result therefore reproduces
+at 0.0003 across three independent runs now. The mean differences match to six
+decimals. Nothing in the README's significance section needed changing except
+one p-value.
+
+That one is the XGBoost-vs-Logistic-Regression figure. The README carried
+0.1073, taken from the standalone execution; the notebook's own run gives
+0.1135. Both were already flagged as the same row's known wobble, and the note
+now lists all three observed values (0.1135, 0.1073, 0.1135) rather than two.
+
+The Logistic Regression row itself moved more than usual this time: its best
+threshold **flipped from 0.58 to 0.62**, taking accuracy to 0.7869 and profit
+to $26,240, with PR-AUC 0.6548 → 0.6551. This is the documented alternation,
+not a new phenomenon, but it falsified two pieces of prose that had been
+written when both non-XGBoost models happened to land on 0.58. The
+threshold-split paragraph said "both 0.58 in this run"; it now gives the two
+values separately and points at the instability note. The instability note's
+own accuracy range was 0.7758–0.7867, and 0.7869 sits just outside it, so the
+range was widened. Its ROC-AUC range (0.843891–0.843903) and profit range
+($26,200–$26,240) both still hold unchanged.
+
+One figure in the error-overlap table also drifted: pairwise Jaccard is now
+0.73–0.78 where it was 0.72–0.78. The shared-error percentage (65.3%, reported
+as 65%), the correlations (0.964–0.980) and both profit figures are unchanged.
+
+**Why:** Post-execution verification, per this project's checklist.
+
+**Requested or incidental:** The user reported the re-run; the README sync
+follows from it.
+
+**Verification status:** Executed and checked in order. `model_metadata.json`
+moved only in `trained_at` and `git_commit`; `xgboost_churn_pipeline.pkl` and
+`simulated_new_customers.csv` are byte-identical, so the artifact reproduced
+and the significance work touched nothing that ships. Cells 26 and 30 produced
+byte-identical output again, so the threshold (0.40), peak OOF profit
+($26,640) and test profit ($6,660) are unmoved. No cell source changed. A
+fourteen-point automated cross-check of README figures against this run's
+stored outputs — Results table, model comparison, significance table, error
+overlap — comes back with zero failures. Tests 166 passing; version gate
+passes.
+
+Worth noting for future runs: the significance conclusion is the stable part
+here, and the Logistic Regression row is the unstable part. Anything written
+about that row should be phrased as a range or explicitly dated to a run, which
+is what has now had to be corrected three separate times.
