@@ -5,6 +5,7 @@ import joblib
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -78,6 +79,24 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Telco Churn Prediction API", lifespan=lifespan)
+
+# A browser refuses to let a page call an API on a different origin unless the
+# API says it is allowed. frontend/index.html is opened from a file or a local
+# static server, so it is always a different origin from this service --
+# without this middleware its requests never arrive here at all, and it sees a
+# network error rather than a response. Browsers only: curl, telco_model.py and
+# the tests are unaffected either way.
+#
+# allow_origins=["*"] is appropriate for a demo API with no authentication:
+# there are no cookies or credentials for another site to ride on, and /predict
+# only scores a customer the caller typed in themselves. Narrow this to the
+# frontend's real origin if the service ever gains auth.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 def _json_safe(value):
