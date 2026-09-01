@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Churn Prediction Demo</title>
+<style>
+  /* ---------------------------------------------------------------
+     Plain CSS, no framework. Variables at the top so every colour is
+     changed in one place instead of hunted through the file.
+     --------------------------------------------------------------- */
+  :root {
+    --bg: #f4f6f8;
+    --card: #ffffff;
+    --text: #1a2027;
+    --muted: #5c6b7a;
+    --border: #d8dee5;
+    --accent: #2563eb;
+    --danger: #b42318;
+    --danger-bg: #fef3f2;
+    --ok: #067647;
+    --ok-bg: #ecfdf3;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 2rem 1rem;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.5;
+  }
+
+  .page { max-width: 900px; margin: 0 auto; }
+
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .subtitle { color: var(--muted); margin: 0 0 1.5rem; }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+
+  fieldset {
+    border: none;
+    border-top: 1px solid var(--border);
+    padding: 1rem 0 0;
+    margin: 0 0 1.25rem;
+  }
+  fieldset:first-of-type { border-top: none; padding-top: 0; }
+
+  legend {
+    font-weight: 600;
+    font-size: .8rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    color: var(--muted);
+    padding: 0;
+  }
+
+  /* Fields flow into as many columns as fit, so the 19-field form stays
+     compact on a laptop and stacks to one column on a phone. */
+  .fields {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: .9rem;
+    margin-top: .75rem;
+  }
+
+  label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: .25rem; }
+  .hint { display: block; font-weight: 400; color: var(--muted); font-size: .75rem; }
+
+  select, input {
+    width: 100%;
+    padding: .5rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: .9rem;
+  }
+  select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  button {
+    padding: .65rem 1.4rem;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .6; cursor: progress; }
+
+  /* Result panel -------------------------------------------------- */
+  .probability { font-size: 2.5rem; font-weight: 700; margin: 0; }
+  .probability-raw { color: var(--muted); font-size: .8rem; margin: 0 0 1rem; }
+
+  .badge {
+    display: inline-block;
+    padding: .3rem .7rem;
+    border-radius: 999px;
+    font-size: .85rem;
+    font-weight: 600;
+  }
+  .badge.target { background: var(--danger-bg); color: var(--danger); }
+  .badge.no-target { background: var(--ok-bg); color: var(--ok); }
+
+  /* A bar showing where this customer's score sits relative to the
+     threshold. The score is the model's output; the threshold is a
+     separate business decision. Drawing both makes that visible. */
+  .bar {
+    position: relative;
+    height: 12px;
+    background: #e5e9ee;
+    border-radius: 999px;
+    margin: 1rem 0 .4rem;
+    overflow: visible;
+  }
+  .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; }
+  .bar-threshold {
+    position: absolute;
+    top: -4px;
+    width: 2px;
+    height: 20px;
+    background: var(--text);
+  }
+  .bar-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: .75rem;
+    color: var(--muted);
+  }
+
+  .explain {
+    margin: 1rem 0 0;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    font-size: .875rem;
+    color: var(--muted);
+  }
+
+  /* Error panel --------------------------------------------------- */
+  .error { border-color: #f5c6c2; background: var(--danger-bg); }
+  .error h2 { color: var(--danger); font-size: 1.05rem; margin: 0 0 .5rem; }
+  .error ul { margin: .5rem 0 0; padding-left: 1.2rem; font-size: .875rem; }
+  .error li { margin-bottom: .3rem; }
+  .error code { background: rgba(0,0,0,.06); padding: .1rem .3rem; border-radius: 3px; }
+
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <h1>Telco Churn Prediction</h1>
+  <p class="subtitle">
+    Enter a customer's details to get a churn probability and a retention
+    recommendation from the model.
+  </p>
+
+  <!-- API URL is a visible field, not a constant buried in the code, so
+       the same file works against localhost and a deployed API. -->
+  <div class="card">
+    <label for="api-url">
+      API base URL
+      <span class="hint">Where the FastAPI service is running. No trailing slash needed.</span>
+    </label>
+    <input id="api-url" type="text" value="http://localhost:8000">
+  </div>
+
+  <form id="customer-form" class="card">
+
+    <fieldset>
+      <legend>Customer</legend>
+      <div class="fields">
+        <div>
+          <label for="gender">Gender</label>
+          <select id="gender" name="gender">
+            <option>Male</option>
+            <option selected>Female</option>
+          </select>
+        </div>
+        <div>
+          <label for="seniorcitizen">Senior citizen</label>
+          <select id="seniorcitizen" name="seniorcitizen">
+            <option value="0" selected>No (0)</option>
+            <option value="1">Yes (1)</option>
+          </select>
+        </div>
+        <div>
+          <label for="partner">Partner</label>
+          <select id="partner" name="partner">
+            <option>Yes</option>
+            <option selected>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="dependents">Dependents</label>
+          <select id="dependents" name="dependents">
+            <option>Yes</option>
+            <option selected>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="tenure">
+            Tenure
+            <span class="hint">Months with the company</span>
+          </label>
+          <input id="tenure" name="tenure" type="number" step="1" value="1" required>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Phone service</legend>
+      <div class="fields">
+        <div>
+          <label for="phoneservice">Phone service</label>
+          <select id="phoneservice" name="phoneservice">
+            <option selected>Yes</option>
+            <option>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="multiplelines">Multiple lines</label>
+          <select id="multiplelines" name="multiplelines">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No phone service</option>
+          </select>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Internet service</legend>
+      <div class="fields">
+        <div>
+          <label for="internetservice">Internet service</label>
+          <select id="internetservice" name="internetservice">
+            <option>DSL</option>
+            <option>Fiber optic</option>
+            <option selected>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="onlinesecurity">Online security</label>
+          <select id="onlinesecurity" name="onlinesecurity">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+        <div>
+          <label for="onlinebackup">Online backup</label>
+          <select id="onlinebackup" name="onlinebackup">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+        <div>
+          <label for="deviceprotection">Device protection</label>
+          <select id="deviceprotection" name="deviceprotection">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+        <div>
+          <label for="techsupport">Tech support</label>
+          <select id="techsupport" name="techsupport">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+        <div>
+          <label for="streamingtv">Streaming TV</label>
+          <select id="streamingtv" name="streamingtv">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+        <div>
+          <label for="streamingmovies">Streaming movies</label>
+          <select id="streamingmovies" name="streamingmovies">
+            <option>Yes</option>
+            <option selected>No</option>
+            <option>No internet service</option>
+          </select>
+        </div>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Contract &amp; billing</legend>
+      <div class="fields">
+        <div>
+          <label for="contract">Contract</label>
+          <select id="contract" name="contract">
+            <option selected>Month-to-month</option>
+            <option>One year</option>
+            <option>Two year</option>
+          </select>
+        </div>
+        <div>
+          <label for="paperlessbilling">Paperless billing</label>
+          <select id="paperlessbilling" name="paperlessbilling">
+            <option>Yes</option>
+            <option selected>No</option>
+          </select>
+        </div>
+        <div>
+          <label for="paymentmethod">Payment method</label>
+          <select id="paymentmethod" name="paymentmethod">
+            <option>Electronic check</option>
+            <option selected>Mailed check</option>
+            <option>Bank transfer (automatic)</option>
+            <option>Credit card (automatic)</option>
+          </select>
+        </div>
+        <div>
+          <label for="monthlycharges">Monthly charges</label>
+          <input id="monthlycharges" name="monthlycharges" type="number" step="any" value="1.0" required>
+        </div>
+        <div>
+          <label for="totalcharges">
+            Total charges
+            <span class="hint">Optional &mdash; leave blank for new customers</span>
+          </label>
+          <input id="totalcharges" name="totalcharges" type="number" step="any" value="1.0">
+        </div>
+      </div>
+    </fieldset>
+
+    <button id="submit-button" type="submit">Predict churn</button>
+  </form>
+
+  <!-- Both panels start hidden and only one is ever shown at a time. -->
+  <div id="result" class="card hidden"></div>
+  <div id="error" class="card error hidden"></div>
+
+</div>
+
+<script>
+/* =================================================================
+   These two lists mirror config.py. The dropdown values above are
+   copied from CATEGORICAL_DOMAINS; these are NUMERIC_COLUMNS and
+   the one column config.py marks nullable.
+
+   Everything arriving from a form is a string, so these are the
+   fields that need converting to real numbers before we send JSON.
+   ================================================================= */
+const NUMERIC_FIELDS = ["seniorcitizen", "tenure", "monthlycharges", "totalcharges"];
+const NULLABLE_FIELDS = ["totalcharges"];
+
+const form = document.getElementById("customer-form");
+const submitButton = document.getElementById("submit-button");
+const apiUrlInput = document.getElementById("api-url");
+const resultPanel = document.getElementById("result");
+const errorPanel = document.getElementById("error");
+
+
+/* Read the form into the object shape api.py's Customer model expects. */
+function buildCustomer() {
+  // FormData collects every input that has a `name`, so adding a field
+  // to the HTML above is enough -- no list of names to keep in sync.
+  const raw = Object.fromEntries(new FormData(form).entries());
+
+  for (const field of NUMERIC_FIELDS) {
+    const value = raw[field].trim();
+
+    if (value === "") {
+      // Blank optional field -> JSON null, which totalcharges accepts.
+      // Blank required field -> leave the empty string in place so the
+      // API answers with a clear 422. Substituting 0 here would be us
+      // inventing data the user never entered.
+      raw[field] = NULLABLE_FIELDS.includes(field) ? null : value;
+    } else {
+      raw[field] = Number(value);
+    }
+  }
+  return raw;
+}
+
+
+/* Only one panel visible at a time, so an old result can't sit next to
+   a fresh error and look like it belongs to it. */
+function show(panel, html) {
+  resultPanel.classList.add("hidden");
+  errorPanel.classList.add("hidden");
+  panel.innerHTML = html;
+  panel.classList.remove("hidden");
+}
+
+
+function showResult(data) {
+  const percent = (data.churn_probability * 100).toFixed(1);
+  const flagged = data.target_for_retention;
+  const comparison = flagged ? "at or above" : "below";
+
+  show(resultPanel, `
+    <p class="probability">${percent}%</p>
+    <p class="probability-raw">churn probability (exact: ${data.churn_probability})</p>
+
+    <span class="badge ${flagged ? "target" : "no-target"}">
+      ${flagged ? "Target for retention" : "Do not target"}
+    </span>
+
+    <div class="bar">
+      <div class="bar-fill" style="width: ${percent}%"></div>
+      <div class="bar-threshold" style="left: ${data.threshold_used * 100}%"></div>
+    </div>
+    <div class="bar-labels"><span>0%</span><span>100%</span></div>
+
+    <p class="explain">
+      The decision threshold is <strong>${data.threshold_used}</strong> (the
+      marker on the bar). This customer's score is ${comparison} it, so they are
+      ${flagged ? "worth targeting" : "not targeted"} by the retention campaign.
+    </p>
+  `);
+}
+
+
+/* A 422 body looks like:
+   {"detail": [{"loc": ["body", "monthlycharges"], "msg": "...", ...}, ...]}
+   One entry per rejected field. */
+function showValidationError(detail) {
+  const items = Array.isArray(detail) ? detail : [];
+
+  const list = items.map(item => {
+    // loc is a path like ["body", "contract"]; the last part is the
+    // field name, which is the only part worth showing a user.
+    const field = Array.isArray(item.loc) ? item.loc[item.loc.length - 1] : "request";
+    return `<li><code>${field}</code> &mdash; ${item.msg}</li>`;
+  }).join("");
+
+  show(errorPanel, `
+    <h2>The API rejected this input (422)</h2>
+    <p>Nothing was scored. Fix the field(s) below and try again.</p>
+    <ul>${list || "<li>No details were provided.</li>"}</ul>
+  `);
+}
+
+
+function showError(title, message) {
+  show(errorPanel, `<h2>${title}</h2><p>${message}</p>`);
+}
+
+
+form.addEventListener("submit", async (event) => {
+  // Without this the browser reloads the page on submit, which is the
+  // pre-JavaScript default and would throw the result away.
+  event.preventDefault();
+
+  const baseUrl = apiUrlInput.value.trim().replace(/\/$/, "");
+  submitButton.disabled = true;
+  submitButton.textContent = "Scoring...";
+
+  try {
+    const response = await fetch(baseUrl + "/predict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(buildCustomer()),
+    });
+
+    if (response.status === 422) {
+      const body = await response.json();
+      showValidationError(body.detail);
+    } else if (response.status === 503) {
+      showError("The model isn't loaded (503)",
+        "The API is running but has no model in memory. Check its startup logs.");
+    } else if (!response.ok) {
+      showError(`The API returned ${response.status}`, await response.text());
+    } else {
+      showResult(await response.json());
+    }
+  } catch (networkError) {
+    // fetch() only rejects when the request never got an HTTP reply at
+    // all: wrong URL, API not running, or the browser blocking it on
+    // CORS. A 422 or a 500 is a successful round trip and lands above.
+    showError("Couldn't reach the API", `
+      No response from <code>${baseUrl}</code>.
+      Check that the API is running, that the URL above is right, and that
+      CORS is enabled on the API. The browser console has the exact reason.
+      <br><br><code>${networkError.message}</code>
+    `);
+  } finally {
+    // In `finally` so the button always comes back, success or failure.
+    submitButton.disabled = false;
+    submitButton.textContent = "Predict churn";
+  }
+});
+</script>
+</body>
+</html>
