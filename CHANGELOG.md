@@ -3791,3 +3791,127 @@ disagree until the notebook is re-run. This is deliberate — the seeded values
 are measured, not predicted, using the notebook's exact configuration — but if
 a re-run does *not* reproduce ROC-AUC 0.843894 and threshold 0.62 exactly, that
 is a real signal and should be investigated rather than papered over.
+## 2026-08-26 — Browser frontend for the /predict endpoint
+
+**Files touched:** `frontend/index.html` (new file, new directory)
+
+**What changed:** Added a single-page browser frontend for the prediction
+service. It is one self-contained HTML file — markup, CSS and JavaScript in
+the same document, no framework, no build step, no npm. Opening the file in a
+browser is the entire install procedure.
+
+The page renders a form covering all 19 fields `api.Customer` requires: 15
+dropdowns whose options are transcribed from `config.CATEGORICAL_DOMAINS`, a
+`seniorcitizen` dropdown offering only 0 and 1 (it lives in `NUMERIC_COLUMNS`
+but `api.Customer` constrains it with `Field(ge=0, le=1)`, so a dropdown is the
+only widget that cannot produce an out-of-range value), and number inputs for
+`tenure`, `monthlycharges` and `totalcharges`. `totalcharges` is the only
+optional field, matching its `float | None` type; blank submits as JSON `null`.
+
+Every field is pre-filled with `config.DUMMY_CUSTOMER`'s values, so submitting
+the untouched form asks for the one prediction this repo already has a pinned
+answer for — `dummy_customer_score`, 0.5699995160102844. That makes the default
+state of the page a working end-to-end check rather than an arbitrary example.
+
+The API base URL is an editable field at the top of the page rather than a
+constant in the JavaScript, so the same file can be pointed at a local uvicorn
+or a deployed instance without an edit. It defaults to `http://localhost:8000`.
+
+On success the page shows the probability as a percentage, the exact unrounded
+float underneath it, a target/do-not-target badge, and a bar with the score
+drawn as a fill and the threshold drawn as a separate marker. The two are drawn
+as distinct things deliberately: the model produces a ranking and the threshold
+is an independently-chosen business decision, which is the distinction this
+project is built around, and a single number would hide it.
+
+Three failure paths are handled and visibly distinguished: 422 (renders each
+Pydantic error as `field — message`, parsed from the `detail` array), 503 (the
+model-not-loaded case `api.py` returns before the globals are set), and a
+thrown `fetch` (no HTTP reply at all — wrong URL, API down, or CORS refusal),
+whose message names all three causes since the browser will not tell the page
+which one it was.
+
+Two small decisions worth recording. The numeric inputs deliberately carry no
+`min="0"` attribute, so a negative number reaches the API and is rejected there
+rather than being blocked by the browser — the server stays the authority on
+validation, and the 422 path is reachable from the UI instead of being dead
+code. And a blank *required* numeric is submitted as the empty string rather
+than being coerced to 0, so the API reports a missing value instead of scoring
+a zero the user never typed.
+
+**Why:** Requested. The user asked for a simple frontend matching the /predict
+contract, reading dropdown values from `config.py` rather than inventing them,
+with the 422 case handled explicitly. They identified themselves as a beginner
+at frontend/API work and asked for readable code over clever code, which is why
+this is one commented file rather than a component tree.
+
+**Requested or incidental:** Requested in full. The tech-stack choice (vanilla
+JS over React/Streamlit) and the serving approach were put to the user before
+any code was written; they chose vanilla JS and an editable URL field, and
+delegated the CORS decision — see the following entry.
+
+**Verification status:** Executed, against the real API. `uv run uvicorn
+api:app --port 8000` was started with the committed artifact and exercised with
+curl: the form's default payload returns 0.5699995160102844, matching
+`model_metadata.json["dummy_customer_score"]` exactly; `monthlycharges: -5`
+returns 422 with the `detail` array shape the error handler parses. The
+JavaScript was extracted and passed `node --check`. Every `name=` attribute in
+the form was diffed against `tuple(CATEGORICAL_DOMAINS) + NUMERIC_COLUMNS` (19
+present, none missing, none extra) and every `<select>`'s option set was diffed
+against its `CATEGORICAL_DOMAINS` entry (all 15 match exactly). `uv run pytest
+-q` — 166 passed, unchanged. Committed to branch `feat/frontend-demo`, not yet merged. The page has not been
+opened in an actual browser by the assistant; the HTTP behaviour it depends on
+was verified directly, but its visual rendering has not been.
+
+## 2026-08-26 — CORS enabled on api.py so a browser page can call it
+
+**Files touched:** `api.py`
+
+**What changed:** Added `CORSMiddleware` to the FastAPI app — an import line
+and a six-line `app.add_middleware(...)` call directly after the `app =
+FastAPI(...)` construction, with a comment explaining what it is for. Configured
+with `allow_origins=["*"]`, `allow_methods=["GET", "POST"]` and
+`allow_headers=["Content-Type"]`, which is the minimum the frontend needs. No
+existing line was modified or removed; the change is purely additive.
+
+**Why:** Browsers refuse to let a page call an API on a different origin unless
+the API's response says it is permitted. `frontend/index.html` is loaded from a
+file or a local static server, so it is always a different origin from the
+service, and its POST carries `Content-Type: application/json`, which makes it
+a non-simple request that triggers a preflight `OPTIONS`. Without this
+middleware the preflight is unanswered, the POST is never sent, and the page
+sees a bare network error. This affects browsers only — `curl`,
+`telco_model.py`, the Docker smoke test and the test suite were all already
+working and are unaffected either way.
+
+`allow_origins=["*"]` is a deliberate choice for this service rather than an
+unconsidered default: there is no authentication, no cookie and no credential
+for another site to ride on, and `/predict` only scores a customer the caller
+supplied themselves, so there is nothing a permissive origin policy exposes.
+The comment in the file says so, and says to narrow it if the service ever
+gains auth.
+
+**Requested or incidental:** Incidental, and flagged as such. The user asked
+for a frontend, not a backend change, and described the API as already built,
+tested and deployed. They were shown the CORS problem and the three ways out
+(same-origin StaticFiles mount, this, or a separate proxy process) before any
+code was written, and asked for whichever was best for learning and as a
+portfolio piece. This one was chosen because their other answer — an editable
+API URL field — requires cross-origin calls by definition, which rules out the
+same-origin mount, and because a standalone frontend is the more useful
+portfolio artifact. **A reader who wants the backend untouched should revert
+this entry's change and replace the frontend's URL field with a same-origin
+path.**
+
+**Note on dependencies:** none added. `CORSMiddleware` re-exports Starlette's,
+which FastAPI already depends on, so `pyproject.toml`, `uv.lock`, the
+`Dockerfile` and CI are untouched.
+
+**Verification status:** Executed. Confirmed importable in the project venv
+before the edit. After the edit, against a live `uvicorn api:app`: a preflight
+`OPTIONS /predict` carrying `Origin: null` (what a `file://` page sends) returns
+200 with `access-control-allow-origin: *`; a `POST` carrying `Origin:
+http://localhost:5500` returns the prediction with the same header present.
+`uv run pytest -q` — 166 passed, unchanged, including `tests/test_api.py`'s
+startup and boundary tests. Committed to branch `feat/frontend-demo`, not yet merged.
+
