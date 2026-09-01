@@ -1,0 +1,306 @@
+================================================================================
+DATA DICTIONARY -- Telco Customer Churn
+ml_projects_4 / telco-churn-retention
+================================================================================
+
+Source : kaggle.com/datasets/blastchar/telco-customer-churn (via kagglehub)
+Shape  : 7,043 x 21 raw -> 7,021 rows x 25 features + target after cleaning
+Target : churn, 26.45% positive
+
+All percentages here describe the full 7,021-row deduplicated DATASET, not
+model performance. Test-set metrics live in README.md. Column names are
+lowercased on load.
+
+
+=== 0. QUICK INFO =============================================================
+
+"Spread" = churn rate of the worst level divided by the best. It ranks how
+much a column separates churners, nothing more -- it is not causal and not
+a model importance score.
+
+  FEATURE                 VALUES                        CHURN RANGE   SPREAD
+  ----------------------- ----------------------------- ------------- ------
+  contract                Mth-to-mth / 1yr / 2yr        2.8 - 42.6%   15.2x
+  tenure                  0-72 months                   9.5 - 52.9%    5.6x  b
+  internetservice         DSL / Fiber optic / No        7.2 - 41.8%    5.8x
+  paymentmethod           4 methods                    15.2 - 45.1%    3.0x
+  onlinesecurity          Yes / No / No internet       14.6 - 41.6%    2.85x a
+  techsupport             Yes / No / No internet       15.2 - 41.5%    2.74x a
+  is_auto_pay        (E)  0 / 1                        16.0 - 34.6%    2.16x
+  paperlessbilling        Yes / No                     16.3 - 33.4%    2.05x
+  dependents              Yes / No                     15.5 - 31.2%    2.01x
+  onlinebackup            Yes / No / No internet       21.5 - 39.8%    1.85x a
+  seniorcitizen           0 / 1                        23.5 - 41.6%    1.77x
+  deviceprotection        Yes / No / No internet       22.5 - 39.0%    1.73x a
+  family_tie         (E)  0 / 1                        19.8 - 34.1%    1.72x
+  partner                 Yes / No                     19.7 - 32.8%    1.66x
+  multiplelines           Yes / No / No phone          24.9 - 28.6%    1.15x
+  streamingmovies         Yes / No / No internet       29.9 - 33.5%    1.12x a
+  streamingtv             Yes / No / No internet       30.1 - 33.3%    1.11x a
+  phoneservice            Yes / No                     24.9 - 26.6%    1.07x
+  gender                  Male / Female                26.1 - 26.8%    1.03x
+  total_services     (E)  0-6 count                     5.3 - 45.8%      --  c
+  monthlycharges          18.25 - 118.75                              --
+  totalcharges            18.80 - 8,684.80  (nullable)                --
+  contractvstenure   (E)  0 - 216                                     --
+  average_monthly_charges (E)  13.78 - 121.40                         --
+  charge_change_ratio (E) 0.636 - 1.451                               --  d
+
+  (E) = engineered, not in the raw file.
+  a  = Yes-vs-No only. Including "No internet service" inflates these to
+       ~5x, but that level is just internetservice=="No" restated.
+  b  = by tenure bucket (0-6m vs 49m+), not per-month.
+  c  = NOT monotonic. See section 4.
+  d  = narrow range, median exactly 1.0. Weak. See section 4.
+
+  READ FIRST -- the five things most often got wrong:
+    1. "No internet service" is not a third state; it is internetservice
+       restated in six columns, same 1,512 rows. Same for "No phone service".
+    2. "Electronic check" is a MANUAL method, and the highest-churn category
+       in the data (45.1%).
+    3. total_services looks backwards at 0. It is contaminated.
+    4. The four protective add-ons halve churn; the two streaming ones do
+       essentially nothing (1.1x).
+    5. Unknown categories fail SILENTLY, not loudly. See section 5.
+
+
+=== 1. DATASET FACTS ===========================================================
+
+  Rows removed      22 exact duplicates, dropped AFTER customerid so the
+                    comparison is on real attributes, not a unique key
+  Churn             1,857 Yes / 5,164 No = 26.45%. This is the PR-AUC
+                    baseline -- always quote PR-AUC against 0.2645, not 0.5
+  Missing values    11 blank totalcharges, all tenure==0. None elsewhere.
+  Imbalance         scale_pos_weight inside XGBoost, tuned in the search;
+                    stratified splits throughout.
+
+
+=== 2. IDENTIFIER AND TARGET ===================================================
+
+customerid                                                      DROPPED
+  String, e.g. "7590-VHVEG", unique per row. Dropped in cell 3, before
+  deduplication -- with it present no two rows could ever look identical.
+
+churn                                                            TARGET
+  "Yes"/"No" -> 1/0. 26.45% positive. Predicting "No" for everyone scores
+  73.55% accuracy, which is why accuracy is not the headline metric.
+
+
+=== 3. RAW FEATURES (19) -- exactly what /predict accepts ======================
+
+Allowed values are enforced in two places that tests assert must agree:
+api.Customer's Literal types, and config.CATEGORICAL_DOMAINS.
+
+--- DEMOGRAPHICS --------------------------------------------------------------
+
+gender                 "Male" | "Female"
+  50.4% / 49.6%. Churn 26.1% / 26.8% -- 1.03x, essentially no signal. Useful
+  as a fairness control: near-equal base rates mean parity criteria are
+  mutually compatible, so any disparity found is a real model artifact.
+
+seniorcitizen          0 | 1   (integer, not "Yes"/"No")
+  83.7% / 16.3%. Churn 23.5% / 41.6% -- 1.77x. The only categorical stored
+  numerically in the raw file. Validated ge=0, le=1, so it sits in
+  config.NUMERIC_COLUMNS despite behaving as a category.
+
+partner                "Yes" | "No"
+  48.5% / 51.5%. Churn 19.7% / 32.8% -- 1.66x.
+
+dependents             "Yes" | "No"
+  30.1% / 69.9%. Churn 15.5% / 31.2% -- 2.01x. Customers with dependents are
+  markedly stickier.
+
+--- PHONE ---------------------------------------------------------------------
+
+phoneservice           "Yes" | "No"
+  90.3% / 9.7%. Churn 26.6% / 24.9% -- 1.07x, almost no signal alone.
+
+multiplelines          "Yes" | "No" | "No phone service"
+  42.3% / 48.0% / 9.7%. Churn 28.6% / 24.9% / 24.9%.
+  TRAP: "No phone service" is exactly the 682 rows where phoneservice=="No".
+  Fully determined by another column -- a structural placeholder, not a state.
+
+--- INTERNET ------------------------------------------------------------------
+
+internetservice        "DSL" | "Fiber optic" | "No"
+  34.5% / 44.0% / 21.5%. Churn 18.9% / 41.8% / 7.2% -- 5.8x.
+  One of the strongest predictors. Fiber churns at 5.8x the no-internet rate;
+  plausibly a price/expectation effect, since fiber is the premium tier.
+
+The six add-ons share one domain -- "Yes" | "No" | "No internet service" --
+and one placeholder: the 1,512 rows where internetservice=="No" carry
+"No internet service" in all six columns simultaneously.
+
+  ADD-ON              % Yes    churn No    churn Yes    spread (Yes vs No)
+  ------------------- -------- ---------- ------------ ------------------
+  onlinesecurity       28.8%     41.6%       14.6%          2.85x
+  techsupport          29.1%     41.5%       15.2%          2.74x
+  onlinebackup         34.6%     39.8%       21.5%          1.85x
+  deviceprotection     34.5%     39.0%       22.5%          1.73x
+  streamingmovies      38.9%     33.5%       29.9%          1.12x
+  streamingtv          38.6%     33.3%       30.1%          1.11x
+
+  The four PROTECTIVE add-ons cut churn by 1.7x to 2.9x. The two STREAMING
+  add-ons move it by 1.1x -- essentially nothing. Streaming is entertainment;
+  the others are lock-in and support. The columns are identically shaped, so
+  this split is easy to miss, and it is part of what total_services captures.
+
+--- ACCOUNT AND BILLING -------------------------------------------------------
+
+contract               "Month-to-month" | "One year" | "Two year"
+  54.9% / 21.0% / 24.1%. Churn 42.6% / 11.3% / 2.8% -- 15.2x.
+  THE strongest single predictor. Largely mechanical -- a two-year customer
+  cannot leave without breaking the contract -- but no less useful for it.
+
+paperlessbilling       "Yes" | "No"
+  59.3% / 40.7%. Churn 33.4% / 16.3% -- 2.05x. Likely a proxy for digital
+  engagement and newer customers rather than a cause.
+
+paymentmethod          "Electronic check" | "Mailed check"
+                     | "Bank transfer (automatic)" | "Credit card (automatic)"
+  33.6% / 22.7% / 22.0% / 21.7%.
+  Churn 45.1% / 18.9% / 16.7% / 15.2% -- 3.0x.
+  TRAP: "Electronic check" is MANUAL -- the customer initiates each payment.
+  It sounds automatic, is not, and is the highest-churn category in the whole
+  dataset. Only the two labelled "(automatic)" are automatic, which is exactly
+  what is_auto_pay encodes. Automatic-vs-manual is also a reasonable proxy for
+  banking access, making it the most defensible socioeconomic axis available.
+
+--- NUMERIC -------------------------------------------------------------------
+
+tenure                 integer, months with the company
+  0 to 72. Median 29, mean 32.5. Validated ge=0, no upper bound: the tree
+  ensemble saturates, so tenure=10**15 scores the same as tenure=1000.
+  11 customers are at 0 (new, not yet billed). Strongly protective --
+  0-6 months churns at 52.9%, 49+ months at 9.5%.
+
+monthlycharges         float, currency
+  18.25 to 118.75. Median 70.40, mean 64.85. Validated ge=0 AND
+  allow_inf_nan=False. Infinity must be blocked explicitly because inf >= 0
+  is True, and it would then reach the scaler and raise mid-request (a 500
+  instead of a 422). NaN is worse: SimpleImputer would silently replace it
+  with the training median, turning garbage into a confident prediction.
+
+totalcharges           float, currency -- THE ONLY OPTIONAL FIELD
+  18.80 to 8,684.80. Median 1,403.88, mean 2,290.35. Validated ge=0,
+  allow_inf_nan=False, nullable. Blank in 11 raw rows, all tenure==0, which
+  is why the raw column parses as string and needs pd.to_numeric. The
+  pipeline's SimpleImputer exists for exactly these rows, and
+  tests/test_integration.py forces 3 fixture rows to tenure=0 so the case is
+  exercised for every seed rather than left to chance.
+
+
+=== 4. ENGINEERED FEATURES (6) =================================================
+
+From feature_engineering_telco.py :: engineer_features(), imported by the
+notebook, api.py, telco_model.py, config.py and two test files -- the single
+most load-bearing module in the repo. config.validate_feature_schema() crashes
+at startup if these do not yield exactly the 25 columns in
+model_metadata.json["feature_columns"].
+
+total_services         count of "Yes" across the six add-ons, 0-6
+  0: n=2,197 churn 21.1%      4: n=  852 churn 22.3%
+  1: n=  966 churn 45.8%      5: n=  571 churn 12.4%
+  2: n=1,033 churn 35.8%      6: n=  284 churn  5.3%
+  3: n=1,118 churn 27.4%
+  NOT MONOTONIC. Churn RISES from 0 to 1 service, then falls steadily. The 0
+  bucket is contaminated: 1,512 of its 2,197 rows are customers with no
+  internet at all, who churn at 7.2%. Remove them and the relationship is
+  monotonic decreasing as expected. Do not read the 0 bucket as "few services
+  is safe" -- read it as "mostly phone-only customers".
+
+is_auto_pay            1 if paymentmethod contains "automatic", else 0
+  43.7% / 56.3%. Churn 16.0% / 34.6% -- 2.16x. Collapses the 4-way
+  paymentmethod into the distinction that actually matters.
+  The implementation calls .astype('string') before .str because an entirely
+  blank paymentmethod column reads as float64 from read_csv and the .str
+  accessor would raise an error naming pandas internals rather than the real
+  problem. It degrades to is_auto_pay=0 instead. (AUDIT.md M9)
+
+family_tie             1 if partner=="Yes" OR dependents=="Yes", else 0
+  53.6% / 46.4%. Churn 19.8% / 34.1% -- 1.72x. Combines two weaker signals
+  into a stronger one, and gives better statistical power for subgroup
+  analysis than either parent column alone.
+
+contractvstenure       contract mapped {Mth:1, 1yr:2, 2yr:3} * tenure
+  0 to 216. Median 37, mean 68.7. An interaction term. A tree can recover
+  this via two sequential splits, so it closes no capability gap -- it earns
+  its place because of XGBoost's per-tree column subsampling: if a tree drops
+  contract or tenure, this column carries the interaction anyway.
+
+average_monthly_charges   totalcharges/tenure if tenure>0, else monthlycharges
+  13.775 to 121.40. Median 70.45, mean 64.85. What the customer has
+  historically paid per month. The fallback covers the 11 tenure==0 rows and
+  prevents a division by zero.
+
+charge_change_ratio    monthlycharges/average_monthly_charges if >0, else 1.0
+  0.636 to 1.451. Median exactly 1.000, mean 1.002, with 603 rows at exactly
+  1.0. >1 means paying more now than historically (a recent rise or upgrade).
+  CAUTION: very narrow range. For most customers totalcharges/tenure is close
+  to monthlycharges by construction, so this carries less information than its
+  name suggests. Treat it as a weak feature.
+
+
+=== 5. TRAPS ===================================================================
+
+5.1  "No internet service" is not a third state. Same 1,512 rows, all six
+     add-on columns, exactly where internetservice=="No". The encoder
+     therefore produces six perfectly correlated indicators -- harmless for a
+     tree ensemble, would matter for a linear model. Same story for
+     "No phone service" (682 rows, multiplelines).
+
+5.2  The 0-services bucket is contaminated (see total_services), and
+     "Electronic check" is a manual method (see paymentmethod). These two
+     are the most likely things to be misread in this dataset.
+
+5.3  Unknown categories fail SILENTLY. The pipeline's OneHotEncoder uses
+     handle_unknown='ignore', so an unrecognised category becomes an
+     all-zeros block indistinguishable from "no information" -- no error,
+     just a different answer. A casing slip alone ('month-to-month' for
+     'Month-to-month') moves the reference customer from 0.5700 to 0.1017 and
+     flips the retention decision. This is why config.CATEGORICAL_DOMAINS and
+     the API's Literal types exist and are asserted to agree.
+
+5.4  Out-of-range NUMBERS are safe; out-of-range CATEGORIES are not. The tree
+     ensemble saturates, so there is deliberately no range check on numerics.
+     The hazard is entirely on the categorical side.
+
+
+=== 6. WHAT THE MODEL RECEIVES, AND WHERE IT IS ENFORCED =======================
+
+25 columns, in model_metadata.json["feature_columns"] order:
+
+   1 gender             10 onlinebackup        19 totalcharges
+   2 seniorcitizen      11 deviceprotection    ------ engineered ------
+   3 partner            12 techsupport         20 total_services
+   4 dependents         13 streamingtv         21 is_auto_pay
+   5 tenure             14 streamingmovies     22 family_tie
+   6 phoneservice       15 contract            23 contractvstenure
+   7 multiplelines      16 paperlessbilling    24 average_monthly_charges
+   8 internetservice    17 paymentmethod       25 charge_change_ratio
+   9 onlinesecurity     18 monthlycharges
+
+Preprocessing inside the pipeline (cell 12, make_preprocessor()):
+  numeric      -> SimpleImputer -> StandardScaler
+  categorical  -> OneHotEncoder(handle_unknown='ignore')
+
+Raw source columns are KEPT alongside their derived versions -- partner and
+dependents survive next to family_tie, paymentmethod next to is_auto_pay. The
+engineered columns are additions, not replacements.
+
+Enforced in:
+  feature_engineering_telco.py      the 6 formulas, defined once
+  config.CATEGORICAL_DOMAINS        allowed values, all 15 categoricals
+  config.NUMERIC_COLUMNS            seniorcitizen, tenure, monthlycharges,
+                                    totalcharges
+  config.NULLABLE_NUMERIC_COLUMNS   totalcharges only
+  api.Customer                      the same domains as Pydantic Literals
+  config.validate_feature_schema()  startup: these 25 must match the metadata
+  config.validate_input_frame()     the batch path's equivalent of Pydantic
+  tests/test_input_validation.py    asserts the API and config domains agree
+
+If engineer_features() changes MEANING without changing column names, bump
+config.SUPPORTED_FEATURE_SCHEMA_VERSION and the notebook's stamped
+feature_schema_version together -- the column check cannot see that case.
+
+================================== END =========================================

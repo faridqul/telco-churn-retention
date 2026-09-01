@@ -3915,3 +3915,121 @@ http://localhost:5500` returns the prediction with the same header present.
 `uv run pytest -q` — 166 passed, unchanged, including `tests/test_api.py`'s
 startup and boundary tests. Committed to branch `feat/frontend-demo`, not yet merged.
 
+
+## 2026-08-27 — DATA_DICTIONARY.txt: a per-feature reference for the dataset
+
+**Files touched:** `DATA_DICTIONARY.txt` (new file)
+
+**What changed:** Added a plain-text data dictionary documenting every column
+the dataset carries — the dropped identifier, the target, the 19 raw features
+the API accepts, and the 6 engineered features — in seven sections.
+
+Each raw feature entry gives its allowed values, its share of the dataset, its
+churn rate per level, and any validation rule attached to it. Each engineered
+feature gives the exact formula as implemented in
+`feature_engineering_telco.py`, its observed range, and the rationale for its
+existence. A fifth section collects the structural traps, a sixth lists the 25
+model columns in metadata order alongside the preprocessing each branch
+receives, and a seventh names every file where these definitions are enforced.
+
+Every percentage in the file was computed from the cached Kaggle dataset
+during this session rather than copied from the README, on the 7,021-row
+deduplicated frame. The file states that scope explicitly at the top so the
+figures are not mistaken for test-set model metrics.
+
+Four things the document records that were not previously written down
+anywhere in the repo:
+
+- **`total_services` is not monotonic in churn.** Churn rises from 21.1% at 0
+  services to 45.8% at 1 service, then falls steadily to 5.3% at 6. The 0
+  bucket is contaminated: 1,512 of its 2,197 rows are customers with no
+  internet at all, who churn at 7.2%. Read naively this feature looks
+  backwards, and the file says so.
+- **The four protective add-ons and the two streaming add-ons behave
+  differently.** Security, backup, device protection and tech support each
+  roughly halve churn; streaming TV and movies barely move it. The six are
+  otherwise identically shaped, so this distinction is easy to miss.
+- **`charge_change_ratio` is weaker than its name suggests** — range 0.636 to
+  1.451, median exactly 1.000, with 603 rows sitting at exactly 1.0. For most
+  customers `totalcharges / tenure` is close to `monthlycharges` by
+  construction.
+- **"Electronic check" is a manual payment method**, and the single
+  highest-churn category in the data at 45.1%. It reads as automatic and is
+  not, which is precisely what `is_auto_pay` disambiguates.
+
+**Why:** Requested — the user asked for a text file explaining every feature
+the dataset carries. Written as `.txt` because that is what was asked for; it
+converts to Markdown without restructuring if that is ever preferred.
+
+**Requested or incidental:** Requested. No code, test, notebook or
+configuration file was modified — this is a documentation addition only, and
+nothing about the model, the artifact or the API changed.
+
+**Verification status:** Executed. Every distribution and churn rate was
+computed from
+`~/.cache/kagglehub/datasets/blastchar/telco-customer-churn/versions/1/`
+during this session. The engineered-feature statistics were produced by
+importing the real `engineer_features()` rather than reimplementing its
+formulas. Two claims were checked separately after drafting: the churn split
+is 1,857 / 5,164 of 7,021, and the 25-column list in section 6 is identical in
+both content and order to `model_metadata.json["feature_columns"]`. The
+formulas quoted in section 4 were transcribed from
+`feature_engineering_telco.py` as it currently stands. **Not yet committed.**
+
+## 2026-08-27 — DATA_DICTIONARY.txt: cheat sheet added, cut 30%, one number fixed
+
+**Files touched:** `DATA_DICTIONARY.txt`
+
+**What changed:** Three things, in one revision of the file added earlier today.
+
+**A cheat sheet, as section 0.** A single table listing all 25 features sorted
+by "spread" — the churn rate of the column's worst level divided by its best.
+That ranking puts `contract` (15.2x) at the top and `gender` (1.03x) at the
+bottom, and lets a reader see the whole dataset's signal structure without
+reading any prose. Engineered columns are marked `(E)`, and four footnotes
+carry the caveats that would otherwise mislead. Under the table sits a
+five-item "read first" list of the things most often got wrong. The section
+numbering shifted by one: the old section 0 (dataset facts) is now section 1,
+and everything below moved down accordingly.
+
+**Cut from 439 to 306 lines, exactly 30%,** as asked. The saving came from
+four places, none of which dropped a fact: the six add-on columns became one
+table instead of six near-identical blocks; sections 6 and 7 merged; the
+three-line `===` banners around each section heading became one self-titling
+rule; and several notes were tightened. Two trap entries the new cheat sheet
+already states in full were compressed to a single cross-referencing line.
+
+**One number was wrong and is now right.** In the add-on comparison table the
+`streamingtv` row carried 39.9% in the "churn when No" column. 39.9% is that
+level's *share of rows*, not its churn rate — the correct figure is 33.3%.
+The error was introduced when the six per-column blocks were collapsed into a
+table, and was caught by re-reading the table against the computed statistics
+rather than by any test. The adjacent spread figure (1.11x) was always correct,
+having been computed separately, which is what made the inconsistency visible.
+
+The add-on table also now reports Yes-vs-No spreads rather than spreads across
+all three levels. Including "No internet service" inflates every add-on to
+roughly 5x, but that level is just `internetservice == "No"` restated, so the
+inflated figure describes internet service rather than the add-on. On the
+honest basis the four protective add-ons range 1.73x to 2.85x while the two
+streaming ones sit at 1.11x and 1.12x — close to no signal at all, which is a
+sharper statement of the protective-versus-streaming split than the first
+draft made.
+
+**Why:** Requested — the user asked for the file to be about 30% shorter with
+a cheat sheet at the start.
+
+**Requested or incidental:** The shortening and the cheat sheet were
+requested. The `streamingtv` correction and the switch to Yes-vs-No spreads
+were not asked for; both are flagged as incidental. The correction was applied
+rather than merely reported because leaving a known-wrong number in a
+reference document would be worse than the edit.
+
+**Verification status:** Executed. All figures were re-derived from the cached
+Kaggle dataset in this session; the Yes-vs-No add-on spreads were computed
+directly rather than inferred from the three-level numbers. The file is 306
+lines with no line exceeding 80 characters, and all seven section headings
+resolve. No code, test or configuration file was touched. **Not yet
+committed**, and still sitting on the `feat/frontend-demo` branch alongside
+unrelated frontend work — see the open question raised with the user.
+
