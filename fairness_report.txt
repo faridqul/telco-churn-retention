@@ -1,0 +1,187 @@
+==============================================================================
+FAIRNESS ANALYSIS -- Telco churn retention model
+==============================================================================
+
+  Artifact   : xgboost_churn_pipeline.pkl
+  Metadata   : model_metadata.json
+  Threshold  : 0.4  (as shipped)
+  Dataset    : /home/yaponsk/.cache/kagglehub/datasets/blastchar/telco-customer-churn/versions/1/WA_Fn-UseC_-Telco-Customer-Churn.csv
+  Test set   : 1405 rows, 372 churners (26.48%)
+  Training   : NONE. The committed pipeline is loaded and scored.
+
+  Reconstruction gate: PASSED -- confusion matrix reproduces the
+  published TP/FP/FN/TN 256/179/116/854.
+
+=== 1. RELIABILITY GATE ======================================================
+
+  A recall estimate's precision is set by the number of CHURNERS in the
+  subgroup, not its total size. Bands applied throughout:
+
+    >= 150  churners   solid        ~+/-7pp on recall
+    >= 100  churners   usable       ~+/-9pp
+    >= 50   churners   marginal     ~+/-13pp, companion required
+    >= 30   churners   marginal-    wide, treat with suspicion
+    <  30   churners   INSUFFICIENT -- no rate is reported at all
+
+=== 2. TIER 1 -- PROTECTED ATTRIBUTES ========================================
+
+  gender   protected: sex
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  Female                   671     190   28.3%   31.6%    70.0%   62.7%  solid
+  Male                     734     182   24.8%   30.4%    67.6%   55.2%  solid
+    recall    Female - Male =   +2.4pp  95% CI [-6.9, +12.4]pp
+    precision Female - Male =   +7.6pp  95% CI [-1.6, +16.9]pp
+
+  seniorcitizen   protected: age
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  senior                   229      89   38.9%   56.8%    86.5%   59.2%  marginal
+  non-senior              1176     283   24.1%   25.9%    63.3%   58.7%  solid
+    recall    senior - non-senior =  +23.3pp  95% CI [+14.1, +31.6]pp  <-- FLAGGED
+    precision senior - non-senior =   +0.5pp  95% CI [-9.4, +10.0]pp
+    NOTE: senior is in the marginal band. The higher-power OOF
+          companion was not computed (needs --with-oof, which refits).
+          Read the interval above, not the point estimate.
+
+  partner   protected: marital status
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  no partner               736     243   33.0%   41.0%    75.3%   60.6%  solid
+  has partner              669     129   19.3%   19.9%    56.6%   54.9%  usable
+    recall    no partner - has partner =  +18.7pp  95% CI [+8.5, +28.8]pp  <-- FLAGGED
+    precision no partner - has partner =   +5.7pp  95% CI [-4.6, +16.1]pp
+
+  dependents   protected: familial status
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  no dependents            974     299   30.7%   38.2%    72.6%   58.3%  solid
+  has dependents           431      73   16.9%   14.6%    53.4%   61.9%  marginal
+    recall    no dependents - has dependents =  +19.2pp  95% CI [+6.4, +30.8]pp  <-- FLAGGED
+    precision no dependents - has dependents =   -3.6pp  95% CI [-16.2, +9.4]pp
+    NOTE: has dependents is in the marginal band. The higher-power OOF
+          companion was not computed (needs --with-oof, which refits).
+          Read the interval above, not the point estimate.
+
+  family_tie   = partner OR dependents (power backup)
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  alone                    657     224   34.1%   41.6%    75.0%   61.5%  solid
+  has family               748     148   19.8%   21.7%    59.5%   54.3%  usable
+    recall    alone - has family =  +15.5pp  95% CI [+5.7, +25.7]pp  <-- FLAGGED
+    precision alone - has family =   +7.2pp  95% CI [-2.2, +17.0]pp
+
+=== 3. TIER 2 -- SOCIOECONOMIC PROXY =========================================
+
+  is_auto_pay is NOT a protected class. It is included because payment
+  method proxies for banking access and therefore income: customers who
+  cannot or do not autopay skew lower-income. A disparity here is not a
+  legal finding, but it is a distributional one worth knowing about.
+
+  is_auto_pay   socioeconomic proxy
+  --------------------------------------------------------------------------
+  subgroup                   n   churn    base    flag   recall    prec  reliability
+  manual pay               781     272   34.8%   44.2%    76.8%   60.6%  solid
+  auto-pay                 624     100   16.0%   14.4%    47.0%   52.2%  usable
+    recall    manual pay - auto-pay =  +29.8pp  95% CI [+19.1, +40.1]pp  <-- FLAGGED
+    precision manual pay - auto-pay =   +8.4pp  95% CI [-2.8, +19.1]pp
+
+=== 4. INTERSECTIONAL DIAGNOSTIC -- seniorcitizen x gender ===================
+
+  A sanity check, not a decision rule. If an intersection is much worse
+  than the two one-way analyses predict, there is an interaction effect
+  the individual checks cannot see.
+
+  subgroup                       n   churn   recall    prec  expected   delta
+  senior, Female               109      42    85.7%   57.1%     87.7%   -2.0pp
+  senior, Male                 120      47    87.2%   61.2%     85.3%   +2.0pp
+  non-senior, Female           562     148    65.5%   65.1%     64.4%   +1.1pp
+  non-senior, Male             614     135    60.7%   52.6%     62.0%   -1.3pp
+
+  No interaction beyond what the one-way checks already show. The
+  seniorcitizen and gender effects combine additively.
+
+=== 5. PER-GROUP THRESHOLDS -- THE COST OF RECALL PARITY =====================
+
+  Economics: CLV $200, contact cost $20, success rate 30%
+  Test set: 229 seniors (89 churners), 1176 non-seniors (283 churners)
+
+  policy                              thr sen  thr non     profit  recall gap
+  --------------------------------------------------------------------------
+  shipped: one threshold                 0.40     0.40     6,660       23.3pp
+  (a) per-group profit optimum           0.40     0.36     6,680       18.3pp
+  (b) per-group + recall parity          0.56     0.36     6,460       -0.8pp
+
+  COST OF RECALL PARITY  =  (a) - (b)  =  $220  (3.3% of (a))
+  Both groups end up catching 67.4% of their real churners.
+
+  These are TEST-SET dollars on 1,405 customers, not an annual figure.
+  (a) is a diagnostic upper bound, NOT a deployment proposal: setting
+  different cutoffs by a protected attribute is disparate treatment and
+  is legally fraught in most jurisdictions. The number that matters is
+  the GAP between (a) and (b) -- the price of the constraint.
+
+=== 6. WHY THERE IS NO 'CORRECT' ANSWER HERE =================================
+
+  When two groups have different base rates -- and in this test set
+  seniors churn at 38.9% against 24.1% for everyone else --
+  recall parity, precision parity and flag-rate parity CANNOT all hold
+  at once. This is a
+  theorem, not a limitation of this model (Chouldechova 2017;
+  Kleinberg, Mullainathan & Raghavan 2016). Any threshold satisfying
+  one criterion necessarily violates the others.
+
+  This report therefore chooses RECALL PARITY (equal opportunity) and
+  says so, rather than presenting a computed 'fair' answer. The reason:
+  a retention offer is an allocated BENEFIT, so the harm being measured
+  is a real churner never being contacted. Precision parity would
+  instead equalise wasted spend, which is the company's interest rather
+  than the customer's.
+
+  A reader who disagrees with that choice should read section 5's
+  numbers and substitute their own criterion. The numbers are reported
+  so the trade-off is visible, not to settle it.
+
+=== 7. SUMMARY IN PLAIN LANGUAGE =============================================
+
+  Groups with a real gap (bigger than 10 points, and the confidence
+  interval does not include zero):
+    - seniorcitizen: recall is 23 points HIGHER for 'senior' than 'non-senior'
+    - partner: recall is 19 points HIGHER for 'no partner' than 'has partner'
+    - dependents: recall is 19 points HIGHER for 'no dependents' than 'has dependents'
+    - family_tie: recall is 16 points HIGHER for 'alone' than 'has family'
+    - is_auto_pay: recall is 30 points HIGHER for 'manual pay' than 'auto-pay'
+
+  Thin but reportable: dependents/has dependents, seniorcitizen/senior.
+  Read the intervals, not the point estimates.
+
+  Which way do these run? In every case the gap favours the group
+  that churns MORE. Seniors, people without a partner, people
+  without dependents and people who pay manually are all MORE likely
+  to be contacted when they are about to leave, not less. That is the
+  expected result of one threshold over groups with different base
+  rates -- the model ranks higher-risk groups higher, so more of them
+  clear the cutoff. The people being missed are the LOW-risk groups:
+  a churning customer with a partner or dependents is meaningfully
+  less likely to be offered retention than a churning customer alone.
+
+  What fairness costs: making the model catch the same share of
+  churning seniors as churning non-seniors would cost $220
+  of the $6,680 that separate per-group cutoffs
+  could earn -- about 3% -- on this 1,405-customer test set.
+
+  But note HOW parity is reached: by raising the senior cutoff, so
+  FEWER at-risk seniors get contacted, not by contacting more
+  non-seniors. Equal recall here is levelling down. That is an
+  argument against enforcing it, and it is visible only because the
+  per-group thresholds are printed rather than summarised.
+
+  What was decided: nothing changes. The model keeps one threshold of
+  0.4 for everyone. Using a different cutoff for seniors would
+  mean treating people differently because of their age, which is the
+  thing fairness work is supposed to prevent -- so the per-group
+  numbers above are a measurement, not a proposal. They exist so that
+  if someone asks 'is this model fair to older customers?', the answer
+  is a number and a stated trade-off rather than a shrug.
+
+==============================================================================

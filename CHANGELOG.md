@@ -4033,3 +4033,135 @@ resolve. No code, test or configuration file was touched. **Not yet
 committed**, and still sitting on the `feat/frontend-demo` branch alongside
 unrelated frontend work — see the open question raised with the user.
 
+## 2026-08-27 — Standalone fairness analysis (fairness_analysis.py)
+
+**Files touched:** `fairness_analysis.py` (new file), `fairness_report.txt`
+(new file, generated output)
+
+**What changed:** Added a standalone fairness analysis that loads the
+committed pipeline and scores it. **It trains nothing.** It reads
+`MODEL_PATH` and the threshold through `config`, and reuses
+`campaign_profit.profit_curve()` / `best_threshold()` rather than restating
+the profit formula. No new dependency: everything it imports is already in the
+runtime set, and it locates the dataset by globbing the kagglehub cache so it
+does not pull in the notebook group.
+
+Seven sections, matching the requested structure: a reliability gate, Tier 1
+protected attributes, a Tier 2 socioeconomic proxy, an intersectional
+diagnostic, a per-group threshold cost, the impossibility constraint, and a
+plain-language summary.
+
+**Two design decisions that were not in the request and are worth recording.**
+
+First, **the notebook caches no predictions**, only the pipeline and a 50-row
+sample CSV. The test split is therefore reconstructed by replaying cells 3-11
+and the seeded `train_test_split`. Reconstruction is a silent-failure risk —
+wrong rows would still produce a plausible report — so `verify_reconstruction()`
+scores the artifact and raises SystemExit unless the confusion matrix equals
+the published 256/179/116/854. It passes.
+
+Second, **out-of-fold predictions cannot be obtained without refitting**, which
+the request explicitly ruled out. The reliability gate nevertheless requires an
+OOF companion for groups in the marginal band. The conflict is resolved by
+making OOF opt-in behind `--with-oof`, which warns before refitting; without it,
+marginal groups are reported with a bootstrap interval and an explicit note that
+the companion was not computed. Point estimates are never shown bare.
+
+**Findings.** Every flagged gap runs in the same direction, and it is the
+opposite of the naive expectation: recall is *higher* for the group that churns
+more. Seniors 86.5% vs non-seniors 63.3% (+23.3pp, CI [+14.1, +31.6]);
+manual-pay 76.8% vs auto-pay 47.0% (+29.8pp); no-partner 75.3% vs has-partner
+56.6%; no-dependents 72.6% vs has-dependents 53.4%. Precision gaps are all
+small and every precision CI crosses zero. The people being under-served are
+the low-base-rate groups — a churning customer with a partner or dependents is
+markedly less likely to be contacted. The report states this direction
+explicitly, because "a 23-point gap" otherwise reads as harm to seniors.
+
+The seniorcitizen x gender intersection shows no interaction: all four cells
+land within 2.0pp of the additive main-effects prediction.
+
+Recall parity between seniors and non-seniors costs **$220 of $6,680** (3.3%)
+on the test set. The report also records *how* parity is reached — by raising
+the senior cutoff from 0.40 to 0.56, so fewer at-risk seniors are contacted.
+Equal recall here is levelling down, which is an argument against enforcing it,
+and is visible only because the per-group thresholds are printed rather than
+summarised.
+
+**Requested or incidental:** The analysis was requested in the structure
+delivered. The reconstruction gate, the opt-in OOF flag and the direction
+paragraph were not requested; all three are flagged as incidental and were
+added because without them the report would have been quietly misleading.
+
+**Verification status:** Executed. The reconstruction gate passes. The OOF path
+was run and confirms both marginal findings at roughly four times the sample:
+senior recall 86.5% on 89 churners becomes 82.6% on 386; has-dependents 53.4%
+on 73 becomes 51.4% on 253. The section 7 summary is byte-identical with and
+without `--with-oof`, confirming OOF is additive rather than verdict-changing.
+The reliability bands were checked at every boundary (29/30, 49/50, 99/100,
+149/150) and the INSUFFICIENT branch was exercised with a synthetic 40-row
+group: no rate is printed, no comparison is made, no finding is recorded.
+`fairness_report.txt` is the committed output of the default no-retrain run;
+the `--with-oof` report was deliberately not kept, since reproducing it
+requires a refit. **No test file was added for this module** — the branches
+above were checked by hand, not pinned. **Not yet committed.**
+
+## 2026-08-27 — Tests for fairness_analysis.py, verified by mutation testing
+
+**Files touched:** `tests/test_fairness_analysis.py` (new file)
+
+**What changed:** 46 tests for the fairness module added in the previous
+entry, which shipped with its branches checked by hand rather than pinned.
+Suite total goes 166 -> 212, runtime 4.3s -> 7.2s.
+
+Coverage is weighted toward the two failure modes that would do real damage,
+rather than spread evenly:
+
+- **The reliability gate**, tested at both sides of all four boundaries
+  (29/30, 49/50, 99/100, 149/150), plus a monotonicity check that would catch
+  bands written out of order, plus the INSUFFICIENT branch end-to-end: a group
+  under 30 churners must yield no rate, no comparison and no finding.
+- **The reconstruction gate**, in both directions. One customer moved across
+  the threshold must abort, and the message must name expected and actual —
+  it fires long after whoever changed the cleaning has stopped looking.
+- **None versus zero.** A subgroup with no churners has an undefined recall,
+  not a recall of 0.0. Returning 0.0 would read as "the model catches nobody
+  in this group", which is the most damaging possible misreport, so it gets
+  its own tests.
+- The `>=` comparison, matching the repo-wide invariant that the API and the
+  batch scorer round nothing and compare identically.
+- That `section_threshold_cost` uses the shared `campaign_profit()` rather
+  than growing a private copy of the formula.
+- That parity never earns more than the unconstrained optimum, which would
+  make the cost-of-fairness figure negative and meaningless.
+
+**Mutation testing.** The suite was not trusted for passing. Ten deliberate
+defects were introduced one at a time and the suite re-run against each. The
+first pass caught 5 of 7 and **two survived**, both from the same mistake:
+`test_a_large_and_certain_gap_is_flagged_as_real` asserted
+`abs(gap) > fa.GAP_FLAG_PP`, and the parity test asserted against
+`fa.RECALL_PARITY_TOLERANCE`. Both assertions were phrased in terms of the
+constant they were testing, so they moved when it moved and caught nothing.
+Both now compare against documented literals, with the constants pinned
+separately, and a comment in the file explains the trap. A further test was
+added asserting the parity row actually narrows the recall gap relative to
+the unconstrained row — guarding the opposite failure, where the constraint
+never binds and the reported cost is a meaningless zero.
+
+Second pass: 9 of 10 caught. The survivor is `BOOTSTRAP_SEED = 42 -> 1`, and
+it is deliberately left uncaught. It is an equivalent mutant, not a defect:
+what matters is that the seed is fixed, which `test_bootstrap_is_reproducible`
+already verifies, and the specific value is an implementation detail rather
+than a contract the way the 10pp rule and the 30-churner floor are.
+
+**Requested or incidental:** Requested — the previous entry recorded the
+missing tests as a known gap and the user asked for them. The mutation-testing
+pass and the two assertion fixes it exposed were not requested and are flagged
+as incidental; they were done because a test suite that has not been shown to
+fail is not evidence of anything.
+
+**Verification status:** Executed. 46 tests pass in 4.9s standalone; the full
+suite is 212 passing in 7.2s. Mutation results are recorded above, and
+`fairness_analysis.py` was diffed against its pre-mutation backup afterwards
+to confirm no mutation was left behind. Tests needing the raw CSV or the
+committed pickle skip cleanly when absent, so a fresh checkout still runs.
+**Not yet committed.**
