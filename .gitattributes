@@ -1,0 +1,6 @@
+# Check text files out with LF line endings on every OS, including Windows,
+# where Git's default core.autocrlf=true would otherwise convert them to CRLF.
+# Two things break under CRLF: tests/test_narrate.py pins the prompt file's
+# sha256, which changes with the line endings, and verify_version_check.sh
+# stops at `set -euo pipefail` ("invalid option name").
+* text=auto eol=lf

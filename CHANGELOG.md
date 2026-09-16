@@ -4165,3 +4165,68 @@ suite is 212 passing in 7.2s. Mutation results are recorded above, and
 to confirm no mutation was left behind. Tests needing the raw CSV or the
 committed pickle skip cleanly when absent, so a fresh checkout still runs.
 **Not yet committed.**
+
+## 2026-09-17 — Windows: force LF line endings, and run the test suite on Windows in CI
+
+**Files touched:** `.gitattributes` (new file), `.github/workflows/tests.yml`
+
+**What changed:** Two small additions so the project also works when cloned on
+Windows. Windows support is a bonus, not a goal — the Docker image remains the
+supported way to run this anywhere — so both are deliberately minimal.
+
+`.gitattributes` is one rule, `* text=auto eol=lf`. Git for Windows installs
+with `core.autocrlf=true`, which rewrites text files to CRLF on checkout. Two
+things break when that happens: `tests/test_narrate.py` pins the sha256 of
+`prompts/explanation_v1.txt`, and the hash changes with the line endings
+(`00d47880…` becomes `a7e64ba1…`), so `test_prompt_text_is_pinned` fails even
+though the text Python sends to the model is identical; and
+`verify_version_check.sh` dies at `set -euo pipefail` with "invalid option
+name". The Dockerfile was checked separately and builds fine with CRLF, so it
+was never the problem. The rule changes no committed content: every tracked
+text file was already LF in the index, and `xgboost_churn_pipeline.pkl` is
+still detected as binary and left alone.
+
+In `tests.yml`, the existing `test` job now runs as a matrix over
+`ubuntu-latest` and `windows-latest` instead of Ubuntu only, with
+`fail-fast: false` so a Windows-only failure doesn't cancel the Linux run.
+Same steps on both: install, version gate, full suite. A matrix rather than a
+second copied job, so the two can't drift. The `docker` job is unchanged and
+stays Linux-only. The repo is public, so the extra runner minutes cost
+nothing.
+
+**Why:** The user asked whether the project works on Windows. Inspection said
+"probably": `uv.lock` has Windows wheels for all four pinned ML libraries, no
+code is Linux-specific, and every file the code reads is ASCII. But nothing had
+ever run there, and the line-ending problem above was real. The user asked for
+the fix and a real check, explicitly without overengineering.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** The line-ending fix was executed, not reasoned about.
+Two throwaway repos mirroring what a Windows user would clone were each cloned
+with `core.autocrlf=true`. Without `.gitattributes`: 37 files came out CRLF,
+the prompt hash no longer matched the pin, and `verify_version_check.sh` failed
+to parse. With it: 0 CRLF files, the hash matched, and the script parsed. The
+workflow YAML was parsed to confirm the matrix. On Linux the full suite still
+passes (343 passed, 1 skipped, 6 live deselected) and the version gate
+passes. **The Windows CI run itself had not happened when this entry was
+written**; its result is recorded in the next entry.
+
+## 2026-09-17 — Record the Windows CI matrix in CLAUDE.md
+
+**Files touched:** `CLAUDE.md`
+
+**What changed:** The CI bullet under Conventions said the suite runs "on every
+push and PR". It now says on Ubuntu and Windows, that Windows is a courtesy
+check rather than a supported target (Docker is), and that the Windows run
+depends on `.gitattributes` forcing LF, naming the test that fails without it.
+
+**Why:** The previous entry changed what CI runs; left alone, this bullet would
+have described a Linux-only pipeline. Naming the `.gitattributes` dependency is
+there so nobody deletes that file as clutter.
+
+**Requested or incidental:** Incidental — a documentation consequence of the
+requested CI change, not itself asked for.
+
+**Verification status:** Documentation only; nothing to execute. Committed
+together with the previous entry's change.

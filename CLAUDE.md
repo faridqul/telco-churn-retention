@@ -214,7 +214,10 @@ number the README publishes. Check these, in order:
   every seed — it used to leave that to chance and 21 of 40 seeds produced
   none (AUDIT.md M7).
 - CI lives in `.github/workflows/tests.yml` — runs `check_model_environment.py`
-  and then `uv run pytest -q`, on every push and PR.
+  and then `uv run pytest -q`, on every push and PR, on Ubuntu and Windows.
+  Windows is a courtesy check, not a supported target (Docker is). It depends
+  on `.gitattributes` forcing LF: without it a Windows checkout changes the
+  prompt file's pinned sha256 and `test_prompt_text_is_pinned` fails.
 - Two version checks exist and are deliberately different.
   `config.validate_environment_versions()` warns and never raises (live
   service: an outage is worse than a maybe-broken pickle);

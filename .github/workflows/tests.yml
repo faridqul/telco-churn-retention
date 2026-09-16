@@ -9,7 +9,14 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Windows is here to catch platform breakage, not because the project
+    # targets it: the Docker image is the supported way to run this anywhere.
+    # fail-fast off so a Windows-only failure doesn't cancel the Linux run.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v7
