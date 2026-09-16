@@ -4230,3 +4230,97 @@ requested CI change, not itself asked for.
 
 **Verification status:** Documentation only; nothing to execute. Committed
 together with the previous entry's change.
+
+## 2026-09-17 — Windows CI result: the committed model does not load on Windows
+
+**Files touched:** `CHANGELOG.md` only (this entry). No code changed.
+
+**What happened:** The branch `ci/windows-check` (commit `55bb2e0`) was pushed
+and CI run 35148077574 completed. `docker` and `test (ubuntu-latest)` passed.
+`test (windows-latest)` failed: **199 passed, 5 skipped, 4 failed, 4 errors**.
+Every one of the eight failures is the same error at the same place: loading
+`xgboost_churn_pipeline.pkl` raises `xgboost._c_api.XGBoostError: input stream
+corrupted` inside `XGBoosterUnserializeFromBuffer`. The affected tests are the
+four in `test_artifact.py` and the four in `test_input_validation.py` that
+start the real app. Installation, the version gate and every test that does
+not load the real pickle passed on Windows.
+
+**What was ruled out:** Line endings did not cause this. Clones made with
+Windows' `core.autocrlf=true`, both with the new `.gitattributes` and from
+`main` without it, produce a pickle byte-identical to the original (sha256
+`90cdf3c5…`); git classifies the file as binary (405 NUL bytes in its first
+8,000). The booster inside the pickle is serialized as UBJSON with explicit
+64-bit lengths, a format XGBoost documents as portable. The root cause is
+therefore on the Windows side of XGBoost 3.4.1 loading this buffer, and could
+not be reproduced from the Linux machine this work was done on.
+
+**Consequence:** Running natively on Windows (`uv run uvicorn api:app`) does
+not currently work, because the model cannot be loaded. Running on Windows
+through Docker is unaffected, since the container is Linux. The `.gitattributes`
+fix stands on its own and remains correct.
+
+**Requested or incidental:** Follow-up to the requested Windows check.
+
+**Verification status:** CI result read from the run's logs. Local checks of
+the pickle bytes executed. **Not yet committed**; the branch's Windows job is
+red.
+
+## 2026-09-17 — Windows failure confirmed on a real runner; Windows CI job removed, Docker is the Windows path
+
+**Files touched:** `.github/workflows/tests.yml`
+
+**What changed:** The `test` job is back to `ubuntu-latest` only. The file is
+restored byte-for-byte to its state on `main`, which removes the Windows
+matrix added two entries ago. `.gitattributes` from that entry is kept.
+
+**Why:** The user asked to make sure the Windows failure was genuine, then to
+stop, because Windows support isn't needed: Docker exists precisely so the
+project runs everywhere. It was confirmed two ways before stopping:
+
+1. **It reproduces.** Re-running the failed job gave the identical result:
+   199 passed, 4 failed, 4 errors, all `input stream corrupted`.
+2. **It isn't caused by `.gitattributes` or by git's checkout.** A throwaway
+   branch cut from `main` (no `.gitattributes`) carried a one-job diagnostic
+   workflow on `windows-latest`. It reported `core.autocrlf: true`, no
+   `.gitattributes`, and a pickle sha256 of `90cdf3c5…7847`, identical to the
+   original. A bare `joblib.load('xgboost_churn_pipeline.pkl')` on Windows
+   Server 2025, with xgboost 3.4.1 and scikit-learn 1.9.0, failed with the same
+   error. The throwaway branch, its worktree and both of its CI runs were
+   deleted afterwards.
+
+So native Windows cannot load this model and nothing that needs it works
+there. A Windows job would be red on every push, adding noise and no
+information, so it's removed rather than marked non-blocking. The root cause,
+on XGBoost's Windows side, was deliberately not pursued: the likely fix would
+change how the model artifact is saved and touch the serving path, which is
+more than a bonus is worth.
+
+`.gitattributes` stays because it's harmless and still correct: a Windows
+checkout keeps LF, so the prompt file's pinned hash and
+`verify_version_check.sh` survive.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Both confirmations above were executed on GitHub's
+Windows runners. The workflow file was verified identical to `main`. The
+branch's CI is re-run by the push of this commit.
+
+## 2026-09-17 — CLAUDE.md: native Windows unsupported, use Docker
+
+**Files touched:** `CLAUDE.md`
+
+**What changed:** Replaced the bullet added earlier today, which described
+Windows as a courtesy CI check, with two bullets. The first says CI runs on
+Ubuntu only. The second says native Windows is not supported and Windows
+users should use Docker, records the evidence (byte-identical pickle, 199
+passing tests, `input stream corrupted` on load), warns against re-adding a
+Windows CI job without fixing that, and explains why `.gitattributes` stays.
+
+**Why:** Keeps CLAUDE.md true after the previous entry removed the Windows
+job, and records the finding where someone would look before attempting
+Windows support again.
+
+**Requested or incidental:** Incidental: a documentation consequence of the
+requested decision.
+
+**Verification status:** Documentation only.

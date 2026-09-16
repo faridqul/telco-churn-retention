@@ -214,10 +214,15 @@ number the README publishes. Check these, in order:
   every seed — it used to leave that to chance and 21 of 40 seeds produced
   none (AUDIT.md M7).
 - CI lives in `.github/workflows/tests.yml` — runs `check_model_environment.py`
-  and then `uv run pytest -q`, on every push and PR, on Ubuntu and Windows.
-  Windows is a courtesy check, not a supported target (Docker is). It depends
-  on `.gitattributes` forcing LF: without it a Windows checkout changes the
-  prompt file's pinned sha256 and `test_prompt_text_is_pinned` fails.
+  and then `uv run pytest -q`, on every push and PR, on Ubuntu only.
+- **Native Windows is not supported; on Windows, use Docker.** Tried
+  2026-09-17 on a real Windows runner: the committed pickle arrives
+  byte-identical, installs cleanly and 199 tests pass, but
+  `joblib.load(xgboost_churn_pipeline.pkl)` raises XGBoost's `input stream
+  corrupted`, so nothing that loads the model works. The container is Linux,
+  so Docker is unaffected. Don't re-add a Windows CI job without fixing that
+  first. `.gitattributes` (forces LF) stays: it keeps a Windows checkout's
+  prompt-file hash and shell script intact.
 - Two version checks exist and are deliberately different.
   `config.validate_environment_versions()` warns and never raises (live
   service: an outage is worse than a maybe-broken pickle);
