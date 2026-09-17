@@ -38,7 +38,40 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
-| `AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. |
+| `docs/AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. Cited throughout as "AUDIT.md M9" etc.; those citations mean this file. |
+| `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), and the local `AUDIT.md`. |
+| `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
+| `prompts/` | Versioned LLM system prompts. `narrate.py` loads one; tests pin each file's sha256. Never edit a prompt in place — add `explanation_vN+1.txt`. |
+| `frontend/` | `index.html`, a single static page calling `/predict`. No build step. |
+
+## Where files go
+
+Organised 2026-09-17. Follow this for new files so the root doesn't fill up
+again:
+
+- **Documents** (reports, references, notes) → `docs/`. `README.md`,
+  `CLAUDE.md`, `CHANGELOG.md` and `LICENSE` stay in the root.
+- **Anything a run produces that can be regenerated** → `outputs/`
+  (gitignored). The one exception is `retention_campaign_targets.csv`, which
+  `telco_model.py` still writes to the root by default (also gitignored).
+- **Prompts** → `prompts/`, one versioned file each.
+- **Notebooks** stay in the root beside `telco_customer_churn.ipynb` for now.
+
+**Planned next step, not done yet ("medium" layout):** `data/` for
+`simulated_new_customers.csv` and `dataset_baseline.json`, and `model/` for
+`xgboost_churn_pipeline.pkl` + `model_metadata.json`. Those names are
+reserved, so don't use them for anything else. The move is deferred because
+these files are referenced in about 100 places. When doing it, update
+together:
+- `config.py` (`MODEL_PATH`, `METADATA_PATH`) and `telco_model.py` defaults
+- the `Dockerfile` `COPY` lines and build-time checks
+- `.github/workflows/tests.yml` (the batch smoke test copies the CSV)
+- `check_model_environment.py` and `verify_version_check.sh`
+- the tests that build paths from `REPO_ROOT`
+- the notebook's save cells (41–43) and load paths
+- `README.md` and this file
+
+Then run the full test suite and a `docker build` before committing.
 
 ## Notebook cell map
 

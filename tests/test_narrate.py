@@ -1,0 +1,1041 @@
+"""Tests for narrate.py. No API key, no network, no cost.
+
+The narration layer is the first part of this project whose output cannot be
+checked by assertion -- an LLM writes it. What CAN be checked is everything
+around it, and that is what this file does: the payload the model is shown,
+the guards its output must pass, the retry bookkeeping, and the three rates.
+The model itself is a `FakeLLM` from tests/conftest.py, scripted with canned
+responses, so every path including "both attempts rejected" is exercised
+deterministically.
+
+Weighted toward the failures the module exists to stop, all silent:
+
+  1. AN INVENTED DRIVER. Every guard is tested in both directions -- output
+     that names an unlisted factor must be rejected, and output that names a
+     listed factor by a paraphrase must NOT be. A guard that rejects
+     everything would pass a one-directional suite and make the feature
+     useless.
+
+  2. A PROTECTED ATTRIBUTE AS A REASON. Tested at both layers: absent from
+     the payload (the control) and rejected in the output anyway (the
+     backstop), in both the structured reasons and the prose summary.
+
+  3. A MISDESCRIBED VALUE. The failure the first live run found (customer row
+     7, "a lower total charged" for $5,762.95). Pinned as a regression test
+     below, along with the three v1 guard false positives ("unlikely to
+     churn", "not at risk of leaving", "a single month").
+
+As in tests/test_explain.py: never phrase an assertion in terms of the
+constant it is testing. MAX_ATTEMPTS, MAX_SUMMARY_CHARS, NARRATION_TOP_N and
+the prompt hash are compared against literals.
+
+Run with: pytest tests/test_narrate.py -v
+"""
+
+import ast
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+
+import pytest
+
+import explain
+import narrate
+from tests.conftest import FakeLLM
+
+# The prompt this suite was written against. Pinned so that editing the
+# wording without bumping PROMPT_VERSION fails here: every rejection rate ever
+# recorded is a measurement OF a specific prompt.
+PROMPT_SHA256 = "b1f98f68c418440b559d5e23f3e24b47adfb4ba0256cf81f26464d4d678c595d"
+
+# v1, kept unused because CHANGELOG.md's stage-1 live results measure it.
+PROMPT_V1_SHA256 = "00d47880a6d95a9792b3c89bc89725d46cd14d3b6b19467290f149763cdd941f"
+
+GOOD_SUMMARY = (
+    "This customer is on a month-to-month contract and has been with us only "
+    "a short time, so there is little holding them. Worth an early retention "
+    "call."
+)
+
+
+def reply(summary=GOOD_SUMMARY, risk_level="high",
+          reasons=(("contract", "raises risk"), ("tenure", "raises risk"))):
+    """A model response in v2's JSON shape."""
+    return json.dumps({
+        "risk_level": risk_level,
+        "reasons": [{"field": f, "direction": d} for f, d in reasons],
+        "summary": summary,
+    })
+
+
+GOOD = reply()
+
+
+# ==========================================================================
+# Synthetic explanations
+#
+# Hand-built rather than produced from the real pickle, so these tests are
+# fast. The shape matches explain.explain_customer()'s output; REFERENCE uses
+# the shipped model's real training medians and spreads (pinned separately in
+# tests/test_explain.py), so the comparisons below are the ones production
+# would make.
+# ==========================================================================
+
+REFERENCE = {
+    "seniorcitizen": {"median": 0.0, "spread": 0.369},
+    "tenure": {"median": 29.0, "spread": 24.517},
+    "monthlycharges": {"median": 70.45, "spread": 30.053},
+    "totalcharges": {"median": 1396.0, "spread": 2273.855},
+    "total_services": {"median": 2.0, "spread": 1.845},
+    "is_auto_pay": {"median": 0.0, "spread": 0.496},
+    "family_tie": {"median": 1.0, "spread": 0.499},
+    "contractvstenure": {"median": 37.0, "spread": 71.418},
+    "average_monthly_charges": {"median": 70.499, "spread": 30.173},
+    "charge_change_ratio": {"median": 1.0, "spread": 0.052},
+}
+
+DEFAULT_DRIVERS = [
+    ("contract", "Month-to-month", 0.5953),
+    ("tenure", 1, 0.4312),
+    ("seniorcitizen", 1, 0.3100),
+    ("internetservice", "Fiber optic", 0.2456),
+    ("totalcharges", 210.5, -0.1200),
+    ("techsupport", "No", 0.0900),
+]
+
+
+def make_explanation(drivers=None, probability=0.57, threshold=0.4):
+    drivers = DEFAULT_DRIVERS if drivers is None else drivers
+    return {
+        "churn_probability": probability,
+        "target_for_retention": probability >= threshold,
+        "threshold_used": threshold,
+        "drivers": [
+            {
+                "field": field,
+                "label": explain.FIELD_LABELS[field],
+                "value": value,
+                "contribution": contribution,
+                "direction": (
+                    "increases" if contribution > 0
+                    else "decreases" if contribution < 0 else "neutral"
+                ),
+                "engineered": field in explain.ENGINEERED_FEATURES,
+            }
+            for field, value, contribution in drivers
+        ],
+        "contributions": {f: c for f, _, c in drivers},
+        "bias": -0.8718,
+        "margin": 0.2818,
+        "reconstruction_error": 5.1e-08,
+        "reference": REFERENCE,
+    }
+
+
+def payload_for(drivers, probability=0.57):
+    return narrate.narration_payload(make_explanation(drivers, probability=probability))
+
+
+@pytest.fixture
+def explanation():
+    return make_explanation()
+
+
+@pytest.fixture
+def payload(explanation):
+    return narrate.narration_payload(explanation)
+
+
+def verdict(output, payload):
+    """Just the rejection type (None when accepted)."""
+    return narrate.validate_narrative(output, payload)[1]
+
+
+# Customer row 7 of simulated_new_customers.csv, as the stage-1 live run saw
+# it: total charged $5,762.95, which lowered their risk.
+ROW_7_DRIVERS = [
+    ("contract", "Two year", -0.9000),
+    ("totalcharges", 5762.95, -0.3000),
+    ("tenure", 68, -0.2000),
+]
+
+
+# ==========================================================================
+# 1. The payload: what the model is allowed to see
+# ==========================================================================
+
+def test_protected_drivers_are_absent_from_the_payload(payload):
+    """The control. A rule in a prompt is a request; removing the
+    information is the thing that actually works."""
+    fields = {factor["field"] for factor in payload["factors"]}
+    assert not fields & narrate.PROTECTED_FIELDS
+
+
+def test_protected_drivers_are_still_in_the_explanation(explanation):
+    fields = {driver["field"] for driver in explanation["drivers"]}
+    assert "seniorcitizen" in fields
+
+
+def test_omitted_protected_drivers_are_named(payload):
+    assert payload["protected_drivers_omitted"] == ["seniorcitizen"]
+
+
+def test_only_protected_drivers_that_outranked_a_shown_factor_are_omitted():
+    """v1 listed every protected driver in the explanation, and with the full
+    25-driver list that was all five on every customer -- no information. A
+    protected driver ranked below the last shown factor would not have been
+    shown anyway, so it was not withheld."""
+    drivers = DEFAULT_DRIVERS + [("gender", "Female", 0.0010)]
+    assert payload_for(drivers)["protected_drivers_omitted"] == ["seniorcitizen"]
+
+
+def test_top_n_is_applied_after_protected_filtering():
+    """A protected driver must not consume one of the slots."""
+    payload = payload_for(DEFAULT_DRIVERS)
+    assert [f["field"] for f in payload["factors"]] == [
+        "contract", "tenure", "internetservice",
+    ]
+
+
+def test_the_model_is_shown_three_factors_by_default():
+    assert narrate.NARRATION_TOP_N == 3
+
+
+def test_a_zero_contribution_driver_is_not_shown():
+    """It has no direction to state."""
+    drivers = [("contract", "Month-to-month", 0.5), ("techsupport", "No", 0.0),
+               ("tenure", 1, 0.2)]
+    assert [f["field"] for f in payload_for(drivers)["factors"]] == ["contract", "tenure"]
+
+
+def test_the_payload_has_exactly_these_keys(payload):
+    assert set(payload) == {
+        "risk_level", "decision", "target_for_retention", "factors",
+        "protected_drivers_omitted",
+    }
+
+
+def test_factor_directions_are_stated_in_words(payload):
+    assert {f["direction"] for f in payload["factors"]} == {"raises risk"}
+    lowered = payload_for(ROW_7_DRIVERS, probability=0.05)
+    assert {f["direction"] for f in lowered["factors"]} == {"lowers risk"}
+
+
+def test_messages_carry_no_probability_weight_or_protected_field(payload):
+    """v1 sent the raw score and the model quoted it as "61.51%". v2 sends a
+    band. Weights are not sent either -- the order of the list is the
+    ranking. Checked in the user turn: the system prompt itself says "never
+    mention weights"."""
+    rendered = narrate.build_messages(payload)[1]["content"]
+    for forbidden in ("0.57", "churn_risk", "0.5953", "weight",
+                      "protected_drivers_omitted", "seniorcitizen",
+                      "target_for_retention"):
+        assert forbidden not in rendered, forbidden
+
+
+def test_the_user_turn_is_the_sent_part_of_the_payload(payload):
+    sent = json.loads(narrate.build_messages(payload)[1]["content"])
+    assert sent == {
+        "risk_level": "high",
+        "decision": "target for retention",
+        "factors": payload["factors"],
+    }
+
+
+def test_payload_states_the_decision_both_ways():
+    assert payload_for(DEFAULT_DRIVERS, 0.9)["decision"] == "target for retention"
+    assert payload_for(DEFAULT_DRIVERS, 0.1)["decision"] == "do not target"
+
+
+@pytest.mark.parametrize("probability, expected", [
+    (0.0, "low"), (0.1999, "low"), (0.20, "moderate"), (0.3999, "moderate"),
+    (0.40, "high"), (0.6999, "high"), (0.70, "very high"), (1.0, "very high"),
+])
+def test_risk_bands_at_the_shipped_threshold(probability, expected):
+    assert narrate.risk_level(probability, 0.4) == expected
+
+
+@pytest.mark.parametrize("threshold", [0.25, 0.4, 0.55])
+def test_a_band_can_never_disagree_with_the_decision(threshold):
+    """High bands are exactly the targeted customers, at any threshold."""
+    for i in range(1001):
+        probability = i / 1000
+        band = narrate.risk_level(probability, threshold)
+        assert (band in {"high", "very high"}) == (probability >= threshold)
+
+
+@pytest.mark.parametrize("value, expected", [
+    (29, "about typical"), (35, "about typical"), (40, "above typical"),
+    (60, "well above typical"), (20, "below typical"), (1, "well below typical"),
+])
+def test_compare_to_typical_uses_training_spreads(value, expected):
+    """tenure: median 29, spread 24.5 -- a quarter spread is ~6 months."""
+    assert narrate.compare_to_typical(value, 29.0, 24.517) == expected
+
+
+def test_compare_to_typical_survives_a_zero_spread():
+    assert narrate.compare_to_typical(5, 5, 0) == "about typical"
+
+
+def test_row_7s_total_charged_is_described_as_well_above_typical():
+    """The stage-1 regression. The model called $5,762.95 "lower" because it
+    had nothing to compare it with; now the comparison is in the payload."""
+    factors = {f["field"]: f for f in payload_for(ROW_7_DRIVERS, 0.05)["factors"]}
+    assert factors["totalcharges"]["value"] == 5762.95
+    assert factors["totalcharges"]["compared_to_typical"] == "well above typical"
+    assert factors["tenure"]["compared_to_typical"] == "well above typical"
+
+
+def test_categorical_factors_get_no_comparison(payload):
+    contract = payload["factors"][0]
+    assert contract == {
+        "name": "contract type", "field": "contract",
+        "direction": "raises risk", "value": "Month-to-month",
+    }
+
+
+def test_a_yes_no_flag_is_sent_as_words_without_a_comparison():
+    """A median of 0 would make every autopay customer "well above typical"."""
+    factor = payload_for([("is_auto_pay", 1, -0.3)])["factors"][0]
+    assert factor["value"] == "yes"
+    assert "compared_to_typical" not in factor
+
+
+def test_a_meaningless_engineered_value_is_compared_but_not_sent():
+    factor = payload_for([("contractvstenure", 136, -0.3)])["factors"][0]
+    assert "value" not in factor
+    assert factor["compared_to_typical"] == "well above typical"
+
+
+def test_float_values_are_rounded_for_the_model():
+    factor = payload_for([("average_monthly_charges", 84.749265, 0.1)])["factors"][0]
+    assert factor["value"] == 84.75
+
+
+def test_the_real_dummy_customer_payload():
+    """End to end from the shipped artifact: the reference points reach the
+    payload, and no protected field is reported as withheld when none
+    outranked the shown factors."""
+    import config
+
+    real = explain.explain_customer(config.DUMMY_CUSTOMER, top_n=None)
+    payload = narrate.narration_payload(real)
+    assert payload["risk_level"] == "high"
+    assert payload["protected_drivers_omitted"] == []
+    by_field = {f["field"]: f for f in payload["factors"]}
+    assert list(by_field) == ["contract", "contractvstenure", "tenure"]
+    assert by_field["tenure"]["compared_to_typical"] == "well below typical"
+
+
+# ==========================================================================
+# 2. The prompt and the request
+# ==========================================================================
+
+def test_prompt_file_exists_and_is_not_empty():
+    assert narrate.PROMPT_PATH.exists()
+    assert narrate.load_prompt().strip()
+
+
+def test_prompt_version_is_the_prompt_filename():
+    assert narrate.PROMPT_VERSION == narrate.PROMPT_PATH.stem
+
+
+def test_prompt_text_is_pinned():
+    """Editing the prompt without bumping PROMPT_VERSION fails here. To change
+    the prompt: write a new versioned file, update PROMPT_SHA256, and
+    re-measure."""
+    actual = hashlib.sha256(narrate.PROMPT_PATH.read_bytes()).hexdigest()
+    assert actual == PROMPT_SHA256, (
+        f"prompts/{narrate.PROMPT_VERSION}.txt has changed.\n"
+        f"  expected {PROMPT_SHA256}\n"
+        f"  actual   {actual}\n"
+        f"Bump the prompt version, update PROMPT_SHA256, and re-measure the "
+        f"rejection rates -- the old ones no longer describe this prompt."
+    )
+
+
+def test_the_v1_prompt_is_kept_unchanged():
+    """Stage 1's live results in CHANGELOG.md are a measurement of this file."""
+    v1 = narrate.REPO_ROOT / "prompts" / "explanation_v1.txt"
+    assert hashlib.sha256(v1.read_bytes()).hexdigest() == PROMPT_V1_SHA256
+
+
+def test_messages_are_a_system_turn_then_a_user_turn(payload):
+    messages = narrate.build_messages(payload)
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[0]["content"] == narrate.load_prompt()
+
+
+def test_the_prompt_version_travels_with_every_result(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    assert result["prompt_version"] == "explanation_v2"
+
+
+def test_the_request_asks_for_strict_json_and_caps_output_tokens(explanation):
+    client = FakeLLM([GOOD])
+    narrate.narrate(explanation, client=client)
+    call = client.calls[0]
+    assert call["max_tokens"] == 250
+    assert call["response_format"]["type"] == "json_schema"
+    assert call["response_format"]["json_schema"]["strict"] is True
+
+
+def test_the_schema_enums_match_the_guards_vocabulary():
+    """The API enforces the schema and the guard enforces its own lists; if
+    they drift, the API could force an answer the guard always rejects."""
+    schema = narrate.RESPONSE_FORMAT["json_schema"]["schema"]
+    assert schema["properties"]["risk_level"]["enum"] == [
+        "low", "moderate", "high", "very high",
+    ]
+    item = schema["properties"]["reasons"]["items"]
+    assert item["properties"]["direction"]["enum"] == ["raises risk", "lowers risk"]
+    assert set(schema["required"]) == {"risk_level", "reasons", "summary"}
+    assert schema["additionalProperties"] is False
+    assert item["additionalProperties"] is False
+
+
+# ==========================================================================
+# 3. Field aliases
+# ==========================================================================
+
+def test_every_feature_column_has_aliases():
+    missing = set(explain.FIELD_LABELS) - set(narrate.FIELD_ALIASES)
+    assert not missing, f"no aliases for: {sorted(missing)}"
+
+
+def test_no_alias_maps_to_two_fields():
+    seen = {}
+    for field, aliases in narrate.FIELD_ALIASES.items():
+        for alias in aliases:
+            assert alias not in seen, (
+                f"{alias!r} is claimed by both {seen[alias]} and {field}"
+            )
+            seen[alias] = field
+
+
+def test_aliases_are_lowercase_and_stripped():
+    for field, aliases in narrate.FIELD_ALIASES.items():
+        for alias in aliases:
+            assert alias == alias.lower().strip(), f"{field}: {alias!r}"
+
+
+def test_every_protected_field_has_aliases():
+    assert narrate.PROTECTED_FIELDS <= set(narrate.FIELD_ALIASES)
+
+
+def test_matching_is_case_insensitive():
+    assert narrate.fields_mentioned("Month-to-Month CONTRACT") == {"contract"}
+
+
+def test_the_longest_alias_wins_an_overlapping_span():
+    assert narrate.fields_mentioned("their average monthly bill") == {
+        "average_monthly_charges"
+    }
+
+
+def test_an_alias_does_not_match_inside_a_longer_word():
+    assert narrate.fields_mentioned("the backups are fine") == set()
+    assert narrate.fields_mentioned("their backup service") == {"onlinebackup"}
+
+
+def test_unrelated_prose_names_no_fields():
+    assert narrate.fields_mentioned("Worth an early call from the team.") == set()
+
+
+def test_a_single_month_is_not_a_marital_status():
+    """v1 false positive: the bare alias "single" mapped to partner."""
+    assert narrate.fields_mentioned("after a single month") == set()
+
+
+def test_being_single_is_still_a_marital_status():
+    assert narrate.fields_mentioned("this customer is single") == {"partner"}
+
+
+# ==========================================================================
+# 4. Parsing: malformed output
+# ==========================================================================
+
+@pytest.mark.parametrize("output, detail", [
+    ("This customer is on a month-to-month contract.", "not valid JSON"),
+    ("```json\n" + GOOD + "\n```", "not valid JSON"),
+    ("[1, 2]", "expected a JSON object"),
+    (json.dumps({"risk_level": "high", "summary": "x"}), "keys were"),
+    (json.dumps({**json.loads(GOOD), "confidence": 0.9}), "keys were"),
+    (reply(risk_level="extreme"), "risk_level"),
+    (reply(summary="   "), "summary is missing or blank"),
+    (reply(reasons=()), "non-empty list"),
+    (reply(reasons=(("contract", "raises risk"), ("tenure", "raises risk"),
+                    ("internetservice", "raises risk"), ("techsupport", "raises risk"))),
+     "4 reasons given for 3 factors"),
+    (reply(reasons=(("contract", "up"),)), "direction"),
+    (reply(reasons=(("contract", "raises risk"), ("contract", "raises risk"))), "repeated"),
+    (json.dumps({"risk_level": "high", "summary": "x",
+                 "reasons": [{"field": "contract"}]}), "exactly field and direction"),
+    (json.dumps({"risk_level": "high", "summary": "x",
+                 "reasons": [{"field": 3, "direction": "raises risk"}]}), "not a string"),
+])
+def test_malformed_output_is_rejected_with_a_reason(output, detail, payload):
+    _, rejection_type, message = narrate.validate_narrative(output, payload)
+    assert rejection_type == "malformed_output"
+    assert detail in message
+
+
+def test_a_reply_truncated_by_the_token_cap_is_malformed(payload):
+    assert verdict(GOOD[:40], payload) == "malformed_output"
+
+
+# ==========================================================================
+# 5. The guards, in both directions
+# ==========================================================================
+
+def test_accepts_a_faithful_output(payload):
+    parsed, rejection_type, _ = narrate.validate_narrative(GOOD, payload)
+    assert rejection_type is None
+    assert parsed == json.loads(GOOD)
+
+
+def test_the_accepted_summary_is_stripped(payload):
+    parsed, _, _ = narrate.validate_narrative(reply(summary=f"  {GOOD_SUMMARY}  "), payload)
+    assert parsed["summary"] == GOOD_SUMMARY
+
+
+def test_accepts_a_subset_of_the_factors_as_reasons(payload):
+    assert verdict(reply(reasons=(("contract", "raises risk"),)), payload) is None
+
+
+def test_accepts_a_factor_value_quoted_verbatim(payload):
+    summary = "This customer has been with us for 1 month on a month-to-month contract."
+    assert verdict(reply(summary=summary), payload) is None
+
+
+def test_accepts_a_rounded_factor_value():
+    payload = payload_for([("totalcharges", 4863.85, 0.3)])
+    output = reply(summary="They have paid $4,864 in total charges.",
+                   reasons=(("totalcharges", "raises risk"),))
+    assert verdict(output, payload) is None
+
+
+def test_rejects_an_unlisted_field_in_the_reasons(payload):
+    """Exact, not alias-matched: this is what the structured output buys."""
+    output = reply(reasons=(("contract", "raises risk"), ("monthlycharges", "raises risk")))
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "unlisted_field"
+    assert "monthlycharges" in detail
+
+
+def test_rejects_an_unlisted_field_in_the_summary(payload):
+    output = reply(summary="Their lack of tech support and high monthly bill drive the risk.")
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "unlisted_field"
+    assert "monthlycharges" in detail
+
+
+def test_rejects_a_protected_field_in_the_reasons(payload):
+    """Also unlisted by construction; must be bucketed as protected."""
+    output = reply(reasons=(("seniorcitizen", "raises risk"),))
+    assert verdict(output, payload) == "protected_attribute"
+
+
+def test_rejects_a_protected_attribute_in_the_summary(payload):
+    output = reply(summary="This senior citizen is on a month-to-month contract.")
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "protected_attribute"
+    assert "seniorcitizen" in detail
+
+
+def test_rejects_a_gendered_pronoun(payload):
+    output = reply(summary="She is on a month-to-month contract and should be called.")
+    assert verdict(output, payload) == "protected_attribute"
+
+
+def test_neutral_pronouns_are_accepted(payload):
+    output = reply(summary="They are on a month-to-month contract and joined a short time ago.")
+    assert verdict(output, payload) is None
+
+
+def test_a_pronoun_inside_a_longer_word_is_not_a_mention():
+    assert narrate.fields_mentioned("there is this shelf and other history") == set()
+
+
+def test_the_protected_check_runs_before_the_unlisted_check(payload):
+    output = reply(summary="This senior citizen has a high monthly bill.")
+    assert verdict(output, payload) == "protected_attribute"
+
+
+def test_a_field_named_inside_a_factors_own_label_is_licensed():
+    """The average_monthly_charges label says 'tenure'. Echoing a label it
+    was handed cannot be a hallucination."""
+    payload = payload_for([
+        ("contract", "Month-to-month", 0.5900),
+        ("average_monthly_charges", 105.7, 0.2500),
+    ])
+    output = reply(
+        summary="Their average monthly bill across their whole tenure is high, "
+                "alongside a month-to-month contract.",
+        reasons=(("contract", "raises risk"), ("average_monthly_charges", "raises risk")),
+    )
+    assert verdict(output, payload) is None
+
+
+def test_licensing_extends_only_to_what_the_labels_actually_say(payload):
+    output = reply(summary="Their lack of online security is what drives this.")
+    assert verdict(output, payload) == "unlisted_field"
+
+
+def test_rejects_the_probability_as_a_percentage(payload):
+    """v1 allowed it and the model wrote "61.51%" for an uncalibrated score.
+    v2 never sends the probability, so any percentage is invented."""
+    output = reply(summary="At 57% risk, this month-to-month customer is worth a call.")
+    assert verdict(output, payload) == "hallucinated_number"
+
+
+def test_rejects_a_number_that_is_nowhere_in_the_payload(payload):
+    output = reply(summary="This month-to-month customer has churned 3 times before.")
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "hallucinated_number"
+    assert "3" in detail
+
+
+def test_rejects_empty_output(payload):
+    assert verdict("", payload) == "empty_output"
+    assert verdict("   \n ", payload) == "empty_output"
+
+
+def test_rejects_an_overlong_summary(payload):
+    output = reply(summary="They are on a month-to-month contract. " * 12)
+    assert verdict(output, payload) == "overlong_output"
+
+
+def test_the_summary_limit_is_four_hundred_characters():
+    assert narrate.MAX_SUMMARY_CHARS == 400
+
+
+def test_rejects_a_risk_level_that_differs_from_the_payload(payload):
+    assert verdict(reply(risk_level="very high"), payload) == "decision_contradiction"
+
+
+def test_rejects_prose_that_contradicts_a_flagged_decision(payload):
+    output = reply(summary="This month-to-month customer is unlikely to churn.")
+    assert verdict(output, payload) == "decision_contradiction"
+
+
+UNFLAGGED_REASONS = (("contract", "raises risk"),)
+
+
+def test_rejects_prose_that_contradicts_an_unflagged_decision():
+    payload = payload_for(DEFAULT_DRIVERS, probability=0.1)
+    output = reply(summary="This month-to-month customer is likely to churn.",
+                   risk_level="low", reasons=UNFLAGGED_REASONS)
+    assert verdict(output, payload) == "decision_contradiction"
+
+
+@pytest.mark.parametrize("summary", [
+    "Despite a month-to-month contract, this customer is unlikely to churn.",
+    "Despite a month-to-month contract, this customer is not at risk of leaving.",
+    "This month-to-month customer is low risk and needs no call.",
+])
+def test_low_risk_language_is_fine_for_a_customer_left_alone(summary):
+    """v1 false positives, the first two: "unlikely to churn" contains
+    "likely to churn" and "not at risk of leaving" contains "at risk of
+    leaving", and a substring check rejected both as contradictions."""
+    payload = payload_for(DEFAULT_DRIVERS, probability=0.1)
+    output = reply(summary=summary, risk_level="low", reasons=UNFLAGGED_REASONS)
+    assert verdict(output, payload) is None
+
+
+def test_rejects_a_reason_whose_direction_is_wrong(payload):
+    output = reply(reasons=(("contract", "lowers risk"),))
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "misstated_factor"
+    assert "contract" in detail
+
+
+ROW_7_REASONS = (("contract", "lowers risk"), ("totalcharges", "lowers risk"))
+
+
+def test_row_7_lower_total_charged_is_rejected():
+    """The stage-1 regression, verbatim phrasing from the live run."""
+    payload = payload_for(ROW_7_DRIVERS, probability=0.05)
+    output = reply(
+        summary="This customer is on a two-year contract, and the fact that they "
+                "have a lower total charged to date also reduces their risk.",
+        risk_level="low", reasons=ROW_7_REASONS,
+    )
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "misstated_factor"
+    assert "totalcharges" in detail and "lower" in detail
+
+
+@pytest.mark.parametrize("summary, expected", [
+    ("Their high total charges and two-year contract keep them loyal.", None),
+    ("They have substantial total charges on a two-year contract.", None),
+    ("Their total charges are low on a two-year contract.", "misstated_factor"),
+    ("A small total spend and a two-year contract keep them.", "misstated_factor"),
+])
+def test_size_words_must_agree_with_the_comparison(summary, expected):
+    payload = payload_for(ROW_7_DRIVERS, probability=0.05)
+    output = reply(summary=summary, risk_level="low", reasons=ROW_7_REASONS)
+    assert verdict(output, payload) == expected
+
+
+BILL_AND_TENURE = [("monthlycharges", 105.0, 0.4), ("tenure", 1, 0.3)]
+BILL_AND_TENURE_REASONS = (("monthlycharges", "raises risk"), ("tenure", "raises risk"))
+
+
+@pytest.mark.parametrize("summary, expected", [
+    ("A high monthly bill and a short tenure drive their risk.", None),
+    ("A low monthly bill and a long tenure drive their risk.", "misstated_factor"),
+    # Each adjective is pinned to its own field across "and".
+    ("A high monthly bill and low tenure drive their risk.", None),
+    # A size word about the RISK is not about the field.
+    ("Their short tenure means high risk, as does their monthly bill.", None),
+    ("Their tenure makes them more likely to leave, as does their monthly bill.", None),
+])
+def test_size_words_are_read_only_near_their_own_field(summary, expected):
+    payload = payload_for(BILL_AND_TENURE, probability=0.8)
+    output = reply(summary=summary, risk_level="very high",
+                   reasons=BILL_AND_TENURE_REASONS)
+    assert verdict(output, payload) == expected
+
+
+def test_an_about_typical_value_is_not_size_checked():
+    """No comparison claim to contradict -- left to the prompt."""
+    payload = payload_for([("tenure", 30, 0.3)], probability=0.8)
+    output = reply(summary="Their long tenure is the main factor.",
+                   risk_level="very high", reasons=(("tenure", "raises risk"),))
+    assert verdict(output, payload) is None
+
+
+def test_every_rejection_type_is_reachable_and_from_the_closed_set(payload):
+    """Step four buckets by these. Each type must be producible, or a bucket
+    is dead code; and nothing outside the set may be produced."""
+    bad = [
+        "",
+        "not json",
+        reply(summary="They are on a month-to-month contract. " * 12),
+        reply(summary="This senior citizen will leave."),
+        reply(summary="Their monthly bill is high."),
+        reply(summary="Their contract adds 0.5953."),
+        reply(summary="This month-to-month customer is unlikely to churn."),
+        reply(reasons=(("contract", "lowers risk"),)),
+    ]
+    produced = {verdict(output, payload) for output in bad}
+    assert produced == set(narrate.REJECTION_TYPES)
+
+
+# ==========================================================================
+# 6. Retry bookkeeping
+# ==========================================================================
+
+BAD_PROTECTED = reply(summary="This senior citizen will leave.")
+BAD_UNLISTED = reply(summary="Their monthly bill is high.")
+
+
+def test_a_good_first_attempt_makes_exactly_one_call(explanation):
+    client = FakeLLM([GOOD])
+    result = narrate.narrate(explanation, client=client)
+    assert len(client.calls) == 1
+    assert len(result["attempts"]) == 1
+    assert result["narrative"] == GOOD_SUMMARY
+    assert result["structured"] == json.loads(GOOD)
+    assert result["narrative_available"] is True
+    assert result["final_rejection_type"] is None
+
+
+def test_the_result_carries_the_payload_the_model_was_shown(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    assert result["payload"] == narrate.narration_payload(explanation)
+
+
+def test_a_rejected_first_attempt_is_retried_once(explanation):
+    client = FakeLLM([BAD_PROTECTED, GOOD])
+    result = narrate.narrate(explanation, client=client)
+    assert len(client.calls) == 2
+    assert result["narrative"] == GOOD_SUMMARY
+
+
+def test_the_two_attempts_are_recorded_separately(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([BAD_PROTECTED, GOOD]))
+    first, second = result["attempts"]
+    assert first["attempt"] == 1
+    assert first["accepted"] is False
+    assert first["rejection_type"] == "protected_attribute"
+    assert first["text"] == BAD_PROTECTED
+    assert second["attempt"] == 2
+    assert second["accepted"] is True
+    assert second["rejection_type"] is None
+    assert second["text"] == GOOD
+
+
+def test_two_rejections_leave_no_narrative_but_keep_the_drivers(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([BAD_PROTECTED, BAD_UNLISTED]))
+    assert result["narrative"] is None
+    assert result["structured"] is None
+    assert result["narrative_available"] is False
+    assert result["final_rejection_type"] == "unlisted_field"
+    assert len(result["drivers"]) == len(explanation["drivers"])
+    assert result["churn_probability"] == explanation["churn_probability"]
+
+
+def test_malformed_then_good_is_retried(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM(["{not json", GOOD]))
+    assert result["attempts"][0]["rejection_type"] == "malformed_output"
+    assert result["narrative_available"] is True
+
+
+def test_at_most_two_attempts_are_ever_made(explanation):
+    client = FakeLLM(["", ""])
+    narrate.narrate(explanation, client=client)
+    assert len(client.calls) == 2
+
+
+def test_the_attempt_cap_is_two():
+    assert narrate.MAX_ATTEMPTS == 2
+
+
+def test_the_retry_turn_carries_the_rejected_text_and_the_rule(explanation):
+    client = FakeLLM([BAD_PROTECTED, GOOD])
+    narrate.narrate(explanation, client=client)
+    retry_messages = client.calls[1]["messages"]
+    assert retry_messages[-2] == {"role": "assistant", "content": BAD_PROTECTED}
+    assert retry_messages[-1]["role"] == "user"
+    assert "never allowed" in retry_messages[-1]["content"]
+
+
+def test_the_correction_names_a_rule_for_every_rejection_type():
+    for rejection_type in narrate.REJECTION_TYPES:
+        correction = narrate._correction(rejection_type, "detail")
+        assert correction.strip()
+        assert "Try again." in correction
+
+
+def test_api_errors_propagate_rather_than_becoming_rejections(explanation):
+    client = FakeLLM([RuntimeError("rate limited")])
+    with pytest.raises(RuntimeError, match="rate limited"):
+        narrate.narrate(explanation, client=client)
+
+
+def test_temperature_is_zero_by_default(explanation):
+    client = FakeLLM([GOOD])
+    narrate.narrate(explanation, client=client)
+    assert client.calls[0]["temperature"] == 0.0
+
+
+def test_the_default_model_is_recorded_in_the_result(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    assert result["model"] == "gpt-4o-mini"
+
+
+def test_attempt_records_carry_latency_tokens_and_finish_reason(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    attempt = result["attempts"][0]
+    assert attempt["latency_ms"] >= 0
+    assert attempt["prompt_tokens"] == 100
+    assert attempt["completion_tokens"] == 30
+    assert attempt["finish_reason"] == "stop"
+
+
+def test_the_result_is_json_serialisable(explanation):
+    json.dumps(narrate.narrate(explanation, client=FakeLLM([GOOD])))
+
+
+# ==========================================================================
+# 7. The three rates
+# ==========================================================================
+
+def _result(attempt_types, narrative="text"):
+    """A minimal narrate() result. `attempt_types` is one entry per attempt:
+    None for accepted, a rejection type otherwise."""
+    return {
+        "narrative": narrative,
+        "attempts": [
+            {"attempt": i + 1, "accepted": t is None, "rejection_type": t}
+            for i, t in enumerate(attempt_types)
+        ],
+    }
+
+
+def test_first_attempt_rate_is_over_all_results():
+    results = [
+        _result([None]),
+        _result([None]),
+        _result(["unlisted_field", None]),
+        _result(["protected_attribute", None]),
+    ]
+    rates = narrate.rejection_rates(results)
+    assert rates["n"] == 4
+    assert rates["first_attempt_rejection_rate"] == 0.5
+
+
+def test_second_attempt_rate_is_over_retries_issued_not_over_all_results():
+    """Four customers, two retries, one of which failed again: 1/2, not 1/4."""
+    results = [
+        _result([None]),
+        _result([None]),
+        _result(["unlisted_field", None]),
+        _result(["unlisted_field", "unlisted_field"], narrative=None),
+    ]
+    rates = narrate.rejection_rates(results)
+    assert rates["retries_issued"] == 2
+    assert rates["second_attempt_rejection_rate"] == 0.5
+    assert rates["final_rejection_rate"] == 0.25
+
+
+def test_second_attempt_rate_is_none_when_no_retry_was_ever_issued():
+    rates = narrate.rejection_rates([_result([None]), _result([None])])
+    assert rates["second_attempt_rejection_rate"] is None
+    assert rates["retries_issued"] == 0
+
+
+def test_final_rate_counts_results_with_no_narrative():
+    results = [
+        _result([None]),
+        _result(["empty_output", "empty_output"], narrative=None),
+    ]
+    assert narrate.rejection_rates(results)["final_rejection_rate"] == 0.5
+
+
+def test_buckets_sum_to_the_rejection_counts():
+    results = [
+        _result(["unlisted_field", None]),
+        _result(["unlisted_field", None]),
+        _result(["protected_attribute", "unlisted_field"], narrative=None),
+        _result([None]),
+    ]
+    rates = narrate.rejection_rates(results)
+    assert rates["first_attempt_by_type"] == {
+        "unlisted_field": 2, "protected_attribute": 1,
+    }
+    assert rates["second_attempt_by_type"] == {"unlisted_field": 1}
+
+
+def test_rates_of_an_empty_batch_are_none_rather_than_zero():
+    rates = narrate.rejection_rates([])
+    assert rates["n"] == 0
+    assert rates["first_attempt_rejection_rate"] is None
+    assert rates["final_rejection_rate"] is None
+
+
+def test_rates_are_computed_from_real_narrate_results(explanation):
+    results = [
+        narrate.narrate(explanation, client=FakeLLM([GOOD])),
+        narrate.narrate(explanation, client=FakeLLM([BAD_UNLISTED, GOOD])),
+    ]
+    rates = narrate.rejection_rates(results)
+    assert rates["first_attempt_rejection_rate"] == 0.5
+    assert rates["second_attempt_rejection_rate"] == 0.0
+    assert rates["final_rejection_rate"] == 0.0
+
+
+# ==========================================================================
+# 8. The client boundary
+# ==========================================================================
+
+def test_narrate_does_not_import_the_sdk_at_module_scope():
+    tree = ast.parse(Path(narrate.__file__).read_text())
+    top_level = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top_level.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top_level.add(node.module.split(".")[0])
+    assert "openai" not in top_level
+
+
+def test_constructing_a_real_client_explains_how_to_install_the_sdk():
+    if importlib.util.find_spec("openai") is not None:
+        pytest.skip("openai is installed; the missing-SDK path cannot be reached")
+    with pytest.raises(RuntimeError, match="uv sync --group llm"):
+        narrate.OpenAIClient()
+
+
+def test_constructing_a_real_client_without_a_key_says_which_variable(monkeypatch):
+    if importlib.util.find_spec("openai") is None:
+        pytest.skip("openai is not installed")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        narrate.OpenAIClient()
+
+
+def test_the_real_client_sends_the_schema_and_the_token_cap():
+    """Through OpenAIClient.complete with the SDK object swapped for a
+    recorder -- no network, no key used. Catches the request quietly losing
+    response_format, which would turn every reply back into free prose."""
+    if importlib.util.find_spec("openai") is None:
+        pytest.skip("openai is not installed")
+
+    class Recorder:
+        def __init__(self):
+            self.kwargs = None
+            self.chat = self
+            self.completions = self
+
+        def create(self, **kwargs):
+            self.kwargs = kwargs
+
+            class Usage:
+                prompt_tokens, completion_tokens = 400, 70
+
+            class Choice:
+                finish_reason = "stop"
+
+                class message:
+                    content = GOOD
+
+            class Response:
+                choices = [Choice]
+                usage = Usage
+
+            return Response
+
+    client = narrate.OpenAIClient(api_key="sk-not-a-real-key")
+    client._client = recorder = Recorder()
+    completion = client.complete(
+        [{"role": "user", "content": "x"}], model="gpt-4o-mini", temperature=0.0,
+        max_tokens=250, response_format=narrate.RESPONSE_FORMAT,
+    )
+    assert recorder.kwargs["response_format"] is narrate.RESPONSE_FORMAT
+    assert recorder.kwargs["max_completion_tokens"] == 250
+    assert completion.text == GOOD
+    assert completion.finish_reason == "stop"
+    assert (completion.prompt_tokens, completion.completion_tokens) == (400, 70)
+
+
+# ==========================================================================
+# 9. Rendering
+# ==========================================================================
+
+def test_render_includes_the_structured_output(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    text = "\n".join(narrate.render(result, "TEST"))
+    assert "risk level: high" in text
+    assert "- contract (raises risk)" in text
+    assert "month-to-month contract" in text
+    assert "explanation_v2" in text
+
+
+def test_render_reports_a_missing_narrative_with_its_reason(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([BAD_PROTECTED, BAD_UNLISTED]))
+    text = "\n".join(narrate.render(result, "TEST"))
+    assert "no narrative" in text
+    assert "unlisted_field" in text
+
+
+def test_render_names_the_protected_omissions(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    text = "\n".join(narrate.render(result, "TEST"))
+    assert "protected" in text
+    assert "seniorcitizen" in text
+
+
+def test_render_rates_labels_the_first_attempt_rate_as_the_measure():
+    rates = narrate.rejection_rates([_result([None]), _result(["unlisted_field", None])])
+    text = "\n".join(narrate.render_rates(rates))
+    assert "first-attempt rejection rate" in text
+    assert "the measure of the prompt" in text
+
+
+def test_render_rates_reports_an_absent_second_attempt_rate_as_na():
+    rates = narrate.rejection_rates([_result([None])])
+    assert "n/a" in "\n".join(narrate.render_rates(rates))

@@ -4166,6 +4166,370 @@ to confirm no mutation was left behind. Tests needing the raw CSV or the
 committed pickle skip cleanly when absent, so a fresh checkout still runs.
 **Not yet committed.**
 
+## 2026-09-02 — explain.py: per-customer attribution, with a reconstruction gate
+
+**Files touched:** `explain.py` (new file), `tests/test_explain.py` (new file)
+
+**What changed:** A standalone module that explains *why* the shipped model
+gave one customer the probability it did. It reads
+`xgboost_churn_pipeline.pkl` and the threshold in `model_metadata.json`,
+trains nothing and writes nothing, and is importable as a library
+(`explain_customer(customer) -> dict`) as well as runnable as a CLI
+(`--dummy`, `--csv PATH --row N`, `--csv PATH --all`, `--top N`). It follows
+`fairness_analysis.py`'s shape deliberately: read the artifact, verify the
+reconstruction before reporting anything, print a fixed-width report.
+
+Attribution comes from XGBoost's own
+`Booster.predict(..., pred_contribs=True)` — exact tree SHAP — and **not**
+from the `shap` package that the notebook's cells 39–40 use. The reason is
+dependency placement, not preference: `shap` lives in the `notebook`
+dependency group and is deliberately absent from both the default `uv sync`
+set and the production image, so using it here would have forced it into the
+runtime set the moment this module was wired into the serving path. Using
+`xgboost`, already a runtime dependency, means `pyproject.toml`, `uv.lock`,
+the Dockerfile and CI are all untouched by this change. A test parses the
+module's own AST and asserts `shap` is not among its imports, so that
+property cannot erode quietly.
+
+Four pieces are worth describing because each exists to stop a specific
+silent failure:
+
+- **The positional column map.** The 51 transformed columns are mapped back
+  to the 25 feature columns by reading `transformers_` and the fitted
+  `OneHotEncoder`'s `categories_`, never by parsing the strings
+  `get_feature_names_out()` emits. Parsing `cat__contract_Month-to-month` on
+  the underscore looks simpler and is correct here only by luck — it works
+  because no raw field name happens to contain an underscore, and would start
+  mangling fields the day one did. `verify_column_map()` then checks the
+  positional map against sklearn's own names anyway, which turns two
+  independent derivations into a mutual check.
+- **The collapse.** A categorical field spreads across several one-hot
+  columns and the model assigns a contribution to every one of them,
+  including the columns that are zero for this customer — a tree can split on
+  "contract is not Two year" and that split's credit lands on the Two-year
+  column. Summing the group is therefore exact, not an approximation, and it
+  preserves additivity.
+- **The reconstruction gate.** `verify_attribution()` checks on every single
+  explanation that `sigmoid(sum of contributions + bias)` equals what
+  `predict_proba` returned, within 1e-6, and refuses to return a driver list
+  otherwise. The failure it exists to stop is not a crash: it is a
+  well-formatted, entirely plausible list of reasons for a customer whose
+  prediction actually came from somewhere else.
+- **`UnexplainableModelError`.** Raised, with the type it found named in the
+  message, when the loaded object is not the two-step pipeline with a
+  boostable classifier. `tests/conftest.py`'s `DummyModel` — the stand-in
+  `tests/test_api.py` serves predictions with — has only `predict_proba`, so
+  it can be scored and cannot be explained; that path is tested using the
+  shared fake rather than a new one.
+
+`churn_probability` is taken from `predict_proba` and returned at full
+precision, never rounded and never reconstructed from the contributions.
+Contributions are likewise unrounded in the returned structure; rounding
+happens only in the renderer. This matches the repo-wide rule that the
+serving paths round nothing, and it keeps the additivity identity exact
+enough to assert on.
+
+**Two design decisions, both the user's, recorded so they are not
+re-litigated later:**
+
+1. *The six engineered features keep their own driver rows.* `contract` and
+   `contractvstenure` therefore both appear in a typical explanation, which
+   reads as the same fact stated twice. The alternative — folding each
+   derived feature's contribution back into the raw fields it was computed
+   from — was considered and rejected, because any such split (half to
+   `contract`, half to `tenure`, or any other ratio) is a reporting choice
+   invented after the fact that the model never made. The derived rows are
+   given plain-English labels instead. The reasoning is in the module
+   docstring, not only here.
+2. *`api.py` is not touched.* No `/explain` endpoint in this change. The
+   serving path carries no new risk until the attribution layer is proven,
+   and the entire module is verifiable offline with no API key and no
+   network.
+
+**Why:** This is step one of adding an LLM explanation layer to the project.
+Everything planned on top of it — narrated explanations, a what-if agent
+driving `/predict`, a faithfulness harness — depends on the attribution
+underneath being correct. An LLM handed only a probability and a customer row
+will invent reasons that sound like churn articles rather than reporting what
+the model did, and a retention manager would act on them. So the deterministic
+half was built first, and built so it can be checked absolutely.
+
+**A deviation from the plan, and why.** The plan asserted the additivity
+identity would hold "exactly". On first measurement it did not: the booster
+returns float32 and a float32 accumulation over 52 terms drifted from the
+float64 sum the collapse produces by up to 3.5e-07 across the 51 customers
+tested. That is small, but it would have blunted the additivity assertion into
+something that could no longer distinguish a dropped column from rounding.
+The contributions are now widened to float64 before summing, which brings the
+two paths into exact agreement (measured gap 0.0 for `DUMMY_CUSTOMER` and all
+50 simulated customers), so the test asserts at 1e-12 and stays sharp. This
+does not make the model more precise — `predict_proba` is still float32, which
+is why the reconstruction gate keeps its 1e-6 tolerance.
+
+**Tests.** 60 tests in `tests/test_explain.py`. Suite total goes 212 → 272,
+runtime 7.2s → 8.5s. Coverage is weighted toward the three ways a wrong
+explanation could look right: the additivity identity (asserted for
+`DUMMY_CUSTOMER` and every row of `simulated_new_customers.csv`), the column
+map (tested in both directions, including the offset case specifically), and
+the probability's provenance (pinned against `model_metadata.json`'s
+`dummy_customer_score`, the same anchor `tests/test_artifact.py` uses, so a
+retrain updates the artifact and the expectation together). The pure-logic
+tests use duck-typed stand-ins for the fitted preprocessor and need no
+pickle; the rest skip when the artifact, the metadata or the simulated CSV is
+absent, so a fresh checkout still runs.
+
+The trap recorded in the 2026-08-27 fairness entry was avoided deliberately:
+no assertion is phrased in terms of the constant it is testing.
+`RECONSTRUCTION_TOLERANCE` is compared against the literal `1e-6` and pinned
+separately, so widening it fails a test instead of moving the goalposts.
+
+**Mutation testing.** The suite was not trusted for passing. Twelve
+deliberate defects were introduced one at a time and the suite re-run against
+each. Ten were caught on the first pass. Two survived, and both gaps were
+real:
+
+- *Returning `sigmoid(margin)` instead of `predict_proba`.* Those two agree to
+  ~5e-08 on this artifact, so every approximate assertion in the file passed
+  while the contract that `/explain` and `/predict` report the same number was
+  broken. Fixed by adding
+  `test_probability_is_predict_probas_own_number_bit_for_bit`, which uses
+  exact equality — the one place in the file that does, and the only kind of
+  comparison that can tell those two apart.
+- *Rotating the column map by one before collapsing.* A rotation preserves the
+  total exactly and shifts every contribution to its neighbouring field, so no
+  additivity check can see it and the set of reported fields is unchanged.
+  Fixed by adding `test_dummy_customers_strongest_driver_is_their_contract` —
+  a canary on the whole chain, documented as something a deliberate retrain
+  may legitimately move.
+
+Both fixes were written before the mutants were run, from reasoning about
+which defects the existing assertions could not distinguish; the run then
+confirmed the prediction. One further mutant (`9`, "skip zero-valued one-hot
+columns") was written incorrectly — it multiplied by `contribution != 0`
+rather than by the feature value, making it a no-op equivalent mutant. It was
+rewritten as three real variants (attribute only the customer's own one-hot
+column; keep only the first column of each group; truncate before sorting)
+and all three were caught. Final result: **12 of 12 caught, no surviving
+mutants.**
+
+**Requested or incidental:** Requested. The user asked for step one of the
+GenAI layer to be planned and then built; the plan was approved before any
+code was written. The two extra tests added in response to the mutation run
+were not in the approved plan and are flagged as incidental — they were added
+because a suite that has not been shown to fail is not evidence of anything.
+
+**Verification status:** Executed, not reasoned about.
+`uv run python explain.py --dummy` reproduces the prototype's numbers exactly
+(top driver `contract` / Month-to-month at +0.5953, reconstruction error
+5.07e-08). `--csv simulated_new_customers.csv --all` passes the gate on all 50
+rows, worst reconstruction error 9.18e-08 against a 1e-6 tolerance.
+`uv run pytest tests/test_explain.py -q` → 60 passed in 5.5s.
+`uv run pytest -q` → 272 passed in 8.5s. `explain.py` was diffed against its
+pre-mutation backup afterwards and is byte-identical, so no mutation was left
+behind. `git status` shows only the two intended new files. **Not yet
+committed.**
+
+## 2026-09-02 — narrate.py: the prompt + narration layer, with two guards
+
+**Files touched:** `narrate.py` (new file), `prompts/explanation_v1.txt` (new
+file), `tests/test_narrate.py` (new file), `tests/test_narrate_live.py` (new
+file), `tests/conftest.py`, `pyproject.toml`, `uv.lock`, `.gitignore`
+
+**What changed:** Step two of the GenAI layer. `explain.py` produces a correct
+driver list that no retention manager can read — `contractvstenure +0.5451`
+means nothing to a person. This turns it into two or three sentences of
+English, and is the first part of the project that needs an API key.
+
+The shape is three layers, of which the language model is only the middle one:
+
+```
+narration_payload()  ->  the LLM  ->  validate_narrative()
+   deterministic         one call      deterministic
+```
+
+The model never sees the customer's raw row, never computes anything, and
+every claim it makes is checked before the text is allowed out. `explain.py`
+is not modified and gains no network dependency, which is what keeps it
+importable by the serving path later.
+
+**The two guards, and why each exists.** Both failures are silent and neither
+looks wrong on the page:
+
+- **An invented driver.** A language model knows telco churn priors and will
+  write "high monthly charges and no tech support" whether or not those are
+  what this model used. `FIELD_ALIASES` maps each of the 25 feature columns to
+  the phrases a model actually reaches for, and any field the text names that
+  is not among the factors given is a rejection. Matching is longest-alias-
+  first with each matched span consumed, so "average monthly bill" scores as
+  `average_monthly_charges` and does not also fire `monthlycharges` via
+  "monthly bill" — without that, the guard rejects correct narratives.
+- **A protected attribute given as a reason.** `gender`, `seniorcitizen`,
+  `partner`, `dependents` and the derived `family_tie` are real features and
+  can be real top drivers, but "she is a senior citizen, so she will churn"
+  must never reach a human as a retention rationale. Handled at two layers:
+  those drivers are removed from the payload before the prompt is built (the
+  control), and the output is checked for them anyway (the backstop, for the
+  model raising one from its own priors). `explain_customer()`'s driver list
+  still reports them — that is the honest attribution, and hiding it there
+  would dodge the fairness question rather than answer it. Which drivers were
+  withheld is recorded as `protected_drivers_omitted` so the omission is
+  auditable, and it is deliberately not sent to the model, since naming the
+  withheld fields would reintroduce what withholding them removed.
+
+**Gendered pronouns count as an invented protected attribute.** Found while
+writing the tests: the payload carries no gender, so a narrative that says
+"she" has asserted one it was never given. That is strictly worse than quoting
+a known attribute, and it is the form a model actually produces — it will not
+write "because she is female", it will simply start saying "she". The pronouns
+are in the `gender` alias list and the prompt asks for "this customer" or
+"they". Whole-phrase matching keeps "there", "this" and "shelf" from firing.
+
+**Numbers.** The factor weights ARE given to the model, because they are what
+makes the ranking meaningful, and are deliberately NOT in the set of numbers
+the output may quote — a SHAP log-odds value stated to a retention manager is
+meaningless. Giving a number and forbidding its use is intentional; the guard
+is what enforces what the prompt only asks. Allowed numbers are the churn risk
+and the factors' own values, matched with a half-percent tolerance so "57%"
+passes for 0.5700 and "about 211" passes for 210.5 — rounding a real value is
+not a hallucination.
+
+**The retry policy is the user's, and is recorded as theirs.** Two attempts
+maximum, and the two attempts are never merged: each keeps its own text,
+verdict and rejection type. `rejection_rates()` reports three numbers with
+three different denominators — first-attempt over all results, second-attempt
+over **retries issued** rather than over all results, and final over all
+results. The middle denominator is the subtle one; dividing by n instead would
+make a good prompt look like a good retry loop. It reports `None`, not `0.0`,
+when no retry was ever issued, because zero would read as "retries always
+worked". Step four's harness gates on the first-attempt rate only: that is
+what the model does unaided, and the retry-assisted number flatters it. The
+correction sent with a retry names only the rule that was broken and never a
+suggested fix, which would let a retry launder a hallucination into an
+accepted answer. A failed API call raises rather than being bucketed as a
+rejection — it is not a verdict on the text, and burying it in the buckets
+would corrupt the only numbers this module produces.
+
+**A false positive found and fixed before spending anything on live calls.**
+Templated-but-faithful prose was generated from each of the 50 simulated
+customers' own payloads and run through the guard. One was rejected: the label
+`explain.py` gives `average_monthly_charges` is "average monthly bill across
+their whole tenure", which itself says *tenure* — so a narrative echoing that
+label named a field that was not among that customer's listed factors. The fix
+is principled rather than a special case: whatever the payload's own factor
+labels say is licensed alongside the fields they belong to, because echoing
+text the model was handed cannot be a hallucination. Re-measured at **0
+rejections across all 50**, with real inventions still rejected. Two tests pin
+both directions, and two mutants cover it.
+
+**Dependency placement.** `openai` goes in a new `llm` group, not
+`[project.dependencies]`. Neither `api.py` nor `telco_model.py` imports it, the
+decision path must never depend on a third-party network call, and the
+production image should not grow for a feature it does not serve. `narrate.py`
+imports the SDK lazily inside `OpenAIClient.__init__`, so everything except a
+real API call — the entire non-live test suite included — works with `openai`
+absent; a test parses the module's top-level AST to assert the import stays
+lazy. Verified: `uv sync` still installs exactly 32 distributions, and
+`uv sync --group llm` brings it to 38.
+
+`uv.lock` was regenerated and **was not in the approved plan's file list**.
+It is not optional: the Dockerfile runs `uv sync --frozen`, which makes
+lockfile drift a build failure, so a `pyproject.toml` change without a
+re-lock would have broken the `docker` CI job. The lock gains openai and its
+transitive dependencies (`httpx2`, `jiter`, `sniffio`, `truststore`); nothing
+in the default or `--no-dev` resolution changes, so the image is unaffected.
+
+`pyproject.toml` also gains a `[tool.pytest.ini_options]` block registering a
+`live` marker with `addopts = "-m 'not live'"`, so the tests that spend money
+are deselected by default rather than merely skipped — a developer with
+`OPENAI_API_KEY` exported does not pay for an API run on every
+`uv run pytest -q`, and CI never selects them.
+
+`.gitignore` gains `.env` and `.env.*`. `narrate.py` reads `OPENAI_API_KEY`
+from the environment only, never from a file in the repo and never with a
+default, so nothing here should need a `.env` — the entry exists so that the
+habit of creating one cannot commit a key.
+
+**Tests.** 71 tests in `tests/test_narrate.py` plus 6 in
+`tests/test_narrate_live.py`. Suite total goes 272 → 343 passing (1 skipped, 6
+deselected), runtime 8.5s → 8.2s. `tests/conftest.py` gains `FakeLLM` and
+`FakeCompletion`, scriptable with a queue of canned responses so the retry
+path — including "both attempts rejected" — is exercised deterministically
+with no network. They live in conftest rather than the test module because
+step four's harness will need the same stand-in; one shared fake means a
+divergence fails a test instead of hiding in two copies, the same reason
+`DummyModel` is shared. `FakeCompletion` is deliberately *not*
+`narrate.Completion`: importing narrate into conftest would pull explain,
+joblib and xgboost into every test module pytest loads, and a fake that shares
+the real type is a weaker fake.
+
+Every guard is tested in **both** directions. A guard that rejects everything
+would pass a one-directional suite and make the feature useless, so for each
+rejection type there is also a case that must not fire it: a listed factor
+named by a paraphrase, a percentage form of the risk, a factor value quoted
+verbatim and rounded, neutral pronouns, low-risk language for a customer who
+was left alone. The check order is pinned too — a protected field is by
+construction also unlisted, so bucketing it as the generic failure would hide
+a fairness problem in step four's largest bucket.
+
+The prompt file's sha256 is pinned in the test suite. Every rejection rate
+this project records is a measurement of one specific prompt; changing the
+wording while leaving `PROMPT_VERSION` intact would silently invalidate all of
+them and nothing else would notice.
+
+**Mutation testing. 14 of 14 caught, no survivors.** Mutants: protected fields
+not filtered from the payload; the unlisted check comparing the wrong
+direction; weights allowed into the quotable numbers; only the last attempt
+kept; the second-attempt rate divided by n instead of by retries issued; the
+rejected text returned as the narrative on final failure; aliases matching as
+bare substrings; the attempt cap raised to three; the protected check never
+firing; span consumption dropped from alias matching; the withheld protected
+fields sent to the model; `top_n` applied before protected filtering; label
+licensing removed; label licensing widened into a general amnesty. Two notes
+for whoever repeats this: the run used `-x`, so the reported first failure is
+not always the most specific test that would have caught the mutant (mutants 2
+and 7 both surfaced first in an unrelated end-to-end test); and `narrate.py`
+was diffed against its pre-mutation backup afterwards and is byte-identical.
+
+**Requested or incidental:** Requested — the user asked for step two to be
+planned and then built, and approved the plan before any code was written.
+Three things were not in the approved plan and are flagged as incidental: the
+`uv.lock` regeneration (explained above, and mandatory); the gendered-pronoun
+guard and the prompt line supporting it; and the label-licensing fix with its
+two tests, which came out of a false-positive check that was not in the plan
+either. All three were done because shipping without them would have shipped a
+known defect.
+
+**Verification status:** Executed, with one gap.
+`uv run pytest -q` → 343 passed, 1 skipped, 6 deselected, 8.2s — run twice,
+once with `openai` absent (proving the lazy import holds and the whole suite
+runs on a plain `uv sync`) and once with it installed. Both branches of the
+client-boundary tests were confirmed: with the SDK absent the
+install-instructions test runs and the key test skips; with it present, the
+reverse. `uv sync` reports 32 distributions, `uv sync --group llm` reports 38.
+The `live` marker is confirmed deselected by default and collectable with
+`-m live`. The CLI reports a readable one-line error and exit code 2 when
+`OPENAI_API_KEY` is unset, rather than a traceback through the SDK. Guard
+behaviour was measured against all 50 simulated customers as described above.
+Mutation results are recorded above.
+
+**The gap: no live run was performed.** `OPENAI_API_KEY` is not set in this
+environment, so `tests/test_narrate_live.py` has never executed against a real
+API and **the first-attempt rejection rate — step two's actual result, and the
+number step four's gate is meant to be set from — is not yet measured.**
+Everything deterministic around the model is verified; the model itself has
+not been called once. To close this:
+
+```
+export OPENAI_API_KEY=...
+uv run pytest tests/test_narrate_live.py -m live -v -s
+uv run python narrate.py --csv simulated_new_customers.csv --all --rates --quiet
+```
+
+and record the resulting rates and per-type buckets in a follow-up entry.
+
+**Not yet committed.** Neither is step one's `explain.py` work from the
+previous entry.
+
 ## 2026-09-17 — Windows: force LF line endings, and run the test suite on Windows in CI
 
 **Files touched:** `.gitattributes` (new file), `.github/workflows/tests.yml`
@@ -4324,3 +4688,424 @@ Windows support again.
 requested decision.
 
 **Verification status:** Documentation only.
+
+## 2026-09-17 — First live LLM run (stage 1): the narration layer works, and the guards miss invented adjectives
+
+**Files touched:** `CHANGELOG.md` only (this entry). No code changed.
+
+**What happened:** `tests/test_narrate_live.py` was run for the first time
+against the real API: `uv run --env-file .env pytest
+tests/test_narrate_live.py -m live -v -s`, with `gpt-4o-mini` at temperature 0.
+**All 6 tests passed in 17.4 s.** A logging hook loaded from outside the repo
+recorded every call without adding any.
+
+**Spend:** 10 calls, 5,989 input and 806 output tokens (599 in / 81 out per
+call), **$0.0014** at $0.15 / $0.60 per million tokens. That was the first
+spend; the $0.50 project cap has $0.4986 left.
+
+**Result:** 8 simulated customers were narrated. First-attempt rejection rate
+**0.0%**, no retries issued, final rejection rate 0.0%. The determinism test
+got byte-identical text twice at temperature 0. None of the three known guard
+false positives (“unlikely to churn”, “not at risk of leaving”, “a single
+month”) happened to appear in this sample. That is luck of phrasing, not a
+fix.
+
+**What the numbers don't show, found by reading every narrative against its
+payload:**
+
+1. **An invented adjective got through.** Customer 8's narrative says “the fact
+   that they have a lower total charged to date” decreases their risk. Their
+   total charged is $5,762.95, about seven times the sample median of $823.
+   The direction (“decreases”) is right; the adjective is invented, most likely
+   from the folk logic that low charges mean low risk. The guards check factor
+   names, numbers, protected attributes and the decision, not descriptive
+   words, so this passed. 8 of the 9 distinct narratives were checked as
+   faithful: directions right, and every “high bill” was genuinely above the
+   median.
+2. **Uncalibrated scores are quoted as precise probabilities.** Narratives say
+   “a churn risk of 61.51%” or “7.02%”. The prompt allows stating the risk as a
+   percentage, but the README documents that raw scores run hot (a raw 0.45 is
+   about 38% real risk), so two-decimal percentages of an uncalibrated score
+   overstate both accuracy and precision to a reader.
+
+**Why this matters for what's next:** A 0% guard rejection rate on eight
+customers doesn't mean the narratives are right. Before the 50-customer pass,
+the prompt and guards should handle both issues above, and the three known
+false positives, verified with FakeLLM first under the project's budget rules.
+
+**Requested or incidental:** Requested (stage 1 of the live testing plan).
+
+**Verification status:** Executed against the live API; all tests passed.
+Faithfulness was checked by hand against the payloads, which cost nothing.
+**Not committed**, along with the rest of the uncommitted GenAI work.
+
+## 2026-09-17 — Prompt v2: structured JSON output, comparisons in the payload, and guards for the stage-1 findings
+
+**Files touched:** `narrate.py`, `prompts/explanation_v2.txt` (new),
+`explain.py`, `tests/test_narrate.py`, `tests/test_explain.py`,
+`tests/test_narrate_live.py`, `tests/conftest.py`, `CHANGELOG.md`.
+`prompts/explanation_v1.txt` is **kept unchanged and no longer loaded**: the
+stage-1 results in the previous entry measure that file, and a new test pins
+its sha256 so the record stays checkable.
+
+**What changed:** This covers steps 1–3 of the plan agreed after stage 1.
+
+- **The model returns JSON, not prose.** It now replies with `risk_level`,
+  `reasons` (a list of `{field, direction}`) and `summary` (one or two
+  sentences, at most 60 words). The request uses OpenAI's strict
+  `json_schema` response format and caps output at 250 tokens
+  (`MAX_OUTPUT_TOKENS`). The structured parts are checked exactly: a reason's
+  field id is either in the payload or not, and its direction either matches
+  or not. The summary is still free prose, so the prose guards still run on
+  it. JSON by itself did **not** fix the v1 alias and substring bugs; they are
+  fixed separately below.
+- **What the model is shown.** The raw probability is gone. The model gets a
+  **risk band** instead (`low` / `moderate` / `high` / `very high`, cut at
+  half the threshold, the threshold, and halfway from the threshold to 1). A
+  test proves a band can never disagree with the decision at any threshold.
+  It sees the **top 3 factors, not 5**, with no weights (the list order is the
+  ranking). Each numeric factor carries **`compared_to_typical`** ("well above
+  typical" and so on), measured in training standard deviations from the
+  training median. Yes/no flags are sent as "yes"/"no" with no comparison. The
+  meaningless engineered values (`contractvstenure`, `charge_change_ratio`)
+  carry only the comparison, not the number.
+- **Where "typical" comes from.** A new `explain.reference_points()` reads
+  the training medians and standard deviations straight from the fitted
+  pipeline: the numeric branch's median imputer and its StandardScaler.
+  `explain_customer()` now returns them under `"reference"`. That means no new
+  data file, and a retrain updates them automatically. The totalcharges
+  median is **$1,396** (the stage-1 entry's $823 was the median of the
+  50-row simulated sample, not the training data). Row 7's $5,762.95 is about
+  4× the training median, which the payload reports as "well above typical".
+- **Two new rejection types**, eight in total:
+  - `malformed_output`: not JSON, wrong keys, a bad enum, empty reasons, more
+    reasons than factors, a repeated field, or a reply truncated by the token
+    cap.
+  - `misstated_factor`: a reason's direction differs from the payload, or the
+    summary uses a size word ("lower", "high", "short", …) that disagrees with
+    the factor's comparison. The check reads 2 words before the field mention
+    and 3 after, never across punctuation or a conjunction, and ignores a size
+    word attached to "risk" or "likelihood" ("means high risk").
+  - `decision_contradiction` also fires when `risk_level` differs from the
+    payload's band.
+  - `hallucinated_number` now allows only factor values, so any percentage is
+    rejected.
+- **The three v1 guard false positives are fixed.**
+  - Risk phrases now match as whole phrases, longest first, with each match
+    consuming its span, so "unlikely to churn" and "not at risk of leaving"
+    are no longer read as the high-risk phrases they contain.
+  - The bare alias "single" is replaced by "is single", "are single", "single
+    person" and "single customer", so "a single month" is no longer read as a
+    marital status.
+  - `protected_drivers_omitted` now lists only the protected drivers that
+    outranked the last factor shown. It used to list all five on every
+    customer.
+- **Results** gain `structured` (the whole accepted JSON), `payload` (exactly
+  what the model saw, for review) and a per-attempt `finish_reason`.
+  `narrative` is still the accepted summary text, so `rejection_rates()` is
+  unchanged. `FakeLLM` now accepts and records `max_tokens` and
+  `response_format`, and returns `finish_reason="stop"`.
+- **`tests/test_narrate.py`** was rewritten for the JSON shape: 72 → 137
+  tests, plus 1 that is skipped when `openai` is installed. New coverage:
+  - 13 malformed-output cases
+  - the row-7 sentence, verbatim, as a regression test
+  - size words pinned to their own field across "and"
+  - all three v1 false positives as regression tests
+  - a test that all 8 rejection types can be produced
+  - the real client sending the schema and token cap, checked through a
+    recorder with no network
+  - the real `DUMMY_CUSTOMER` payload
+- **`tests/test_explain.py`** gains 3 tests for `reference_points()`: 60 → 63.
+- **`tests/test_narrate_live.py`** is updated for v2 and gains two checks:
+  every accepted output repeats the payload's band, and no reply hit the token
+  cap. Its report now prints each output next to the factors the model was
+  shown.
+
+**Why:** The first live run passed every guard and still contained a false
+claim ("a lower total charged" for $5,762.95) and quoted uncalibrated scores
+as "61.51%". The requested plan was structured output, comparisons in the
+payload, fewer facts, a token cap, and FakeLLM tests for all of it before
+spending anything.
+
+**Requested or incidental:** Requested (plan steps 1–3). **Incidental,
+flagged separately:** `tests/test_narrate_live.py` now saves every result to
+JSON when `NARRATE_RESULTS=/path.json` is set, so a paid run can be reviewed
+again for free. This was added on my own initiative, looking ahead to plan
+step 6.
+
+**Verification status:**
+- `uv run pytest -q`: **412 passed, 1 skipped, 8 live deselected.**
+- Live tests with no key: all 8 skip, and no call is made.
+- **Replay against real model language, offline ($0):** the 9 real v1
+  narratives from stage 1 were run through the v2 prose guards against their
+  customers' v2 payloads, with v1's percentage sentence removed (v2 forbids it
+  by design). **8 were accepted and 1 was rejected: row 7, `misstated_factor`,
+  "called totalcharges lower, but it is well above typical".** Phrases such as
+  "long tenure of 72 months", "high average monthly bill", "relatively low
+  total charged" (below typical) and "longer tenure" all passed correctly, so
+  the size-word check raised no false positives on real model phrasing.
+- **Mutation pass on `narrate.py`: 15 of 16 mutants were caught**:
+  - the size check, direction check and band comparison removed
+  - phrase matching not longest-first
+  - all protected drivers listed again
+  - `>` instead of `>=` in the band
+  - the bare "single" alias restored
+  - extra JSON keys allowed
+  - the schema not sent to the API
+  - the clause break removed
+  - the reason-count check removed
+  - zero-contribution drivers kept
+  - a comparison given for yes/no flags
+  - a percentage allowed
+  - the risk-noun strip removed from the after-window
+  
+  **Survivor:** removing the risk-noun strip from the 2-word *before*-window.
+  No natural sentence was found that puts "high risk" right before a field
+  mention. It stays in for symmetry and is left untested on purpose.
+  `narrate.py` was restored from a backup and diffed afterwards.
+- **No live API call was made; spend is unchanged at $0.0014.** The v2 prompt
+  has not yet been seen by a real model, so the strict schema being accepted
+  by the API is still untested. **Not committed.**
+
+## 2026-09-17 — Frontend restyle: two-column layout, a threshold gauge, dark mode
+
+**Files touched:** `frontend/index.html`, `CHANGELOG.md`.
+
+**What changed:** The frontend was restyled because it looked too plain. The
+form fields, their `id`/`name` attributes, their default values and the
+request logic are all unchanged, so the page sends exactly the same JSON to
+`/predict` as before.
+
+- **Layout:** there is a dark top bar ("ChurnDesk") and the heading "Should
+  we call this customer?". On screens at least 960px wide the form sits on the
+  left and the result on the right, in a column that stays in view while you
+  scroll. Before, the answer appeared under a long form, out of sight.
+  Narrower screens get one column.
+- **Result panel:**
+  - The probability is shown in a large monospace figure.
+  - The badge has a coloured dot.
+  - The old bar is now a gauge. The track is shaded from the threshold
+    upwards (the zone where a customer gets targeted), and the threshold marker
+    is labelled with its value ("threshold 0.4").
+  - The fill turns red when the customer is targeted.
+- **Before the first prediction** a placeholder card fills the result column,
+  so it's never an empty gap. `show()` now also hides that placeholder, and
+  that is the only JavaScript behaviour change.
+- **The API URL field** moved from the top of the page into the right-hand
+  column, below the result.
+- **Styling details:**
+  - Fonts are IBM Plex Sans and Mono from Google Fonts, falling back to system
+    fonts when offline.
+  - Dropdowns get a chevron drawn in CSS.
+  - Keyboard focus rings are visible.
+  - Inputs line up on a shared baseline even when a label has a hint line.
+  - There is a full dark palette through `prefers-color-scheme`.
+  - Transitions are switched off under `prefers-reduced-motion`.
+- **Below the submit button** a note says the page sends one request to
+  `/predict` and stores nothing.
+
+**Why:** Requested: "can you change the frontend a little? it looks too
+plain."
+
+**Requested or incidental:** Requested. The layout change (result beside
+the form, API URL moved) goes further than colours and fonts. It was a
+deliberate call, because the result used to be off-screen after submitting.
+
+**Verification status:** Rendered once in headless Firefox at 1280px, with
+the result panel filled from a hard-coded `/predict`-shaped response (the
+DUMMY_CUSTOMER score, 0.5699995160102844). The layout, gauge and threshold
+label displayed correctly. The baseline-alignment fix was added after that
+screenshot and has **not** been re-rendered. Not checked: the phone-width
+layout, dark mode, and a real submit against the running API. No tests cover
+the frontend. **Not committed.**
+
+## 2026-09-17 — Frontend: submit button moved to the top of the result column, and a placeholder for the AI explanation
+
+**Files touched:** `frontend/index.html`, `CHANGELOG.md`.
+
+**What changed:**
+- **The "Predict churn" button moved** from the bottom of the form to the
+  top of the right-hand column, so it's on screen without scrolling. It is
+  still the form's submit button, linked through `form="customer-form"`, so
+  pressing Enter in a field still submits. On screens narrower than 960px the
+  right-hand column sits below the form, so the button's card is pinned to
+  the bottom of the viewport instead, and the page gets matching bottom
+  padding.
+- **The right-hand column** still stays in view, but it now scrolls on its own
+  (thin scrollbar) when it's taller than the window. Without that, the lower
+  cards would be unreachable on a short laptop screen.
+- **New "AI explanation" card** under the result, marked "Coming soon". It
+  shows grey placeholder bars in the three slots that match `narrate.py`'s
+  structured output: risk level, top reasons and summary.
+- **A `showExplanation(structured)` function** renders that shape into the
+  card, but **nothing calls it yet**: the `/explain` endpoint (step three of
+  the GenAI plan) doesn't exist. It fills the card with `textContent`, never
+  `innerHTML`, because that text will come from a language model.
+
+**Why:** Requested: "add the section for future ai response, and move the
+predict churn button up, i dont wanna scroll down for it."
+
+**Requested or incidental:** Requested. The small-screen pinned button and
+the scrolling right-hand column are my own choices, made so the button stays
+reachable at every width and the new card doesn't push content off-screen.
+
+**Verification status:** Rendered once in headless Firefox at 1280×900 with
+a hard-coded `/predict` response: the button, result and AI card appeared
+without scrolling. Two tweaks came after that screenshot and were not
+re-rendered: thin-scrollbar and shadow padding on the right-hand column, and
+the AI card's wording ("reached this decision" instead of "flagged this
+customer", since unflagged customers get explained too). Not checked:
+phone-width layout, dark mode, a real submit. `showExplanation()` has never
+run. **Not committed.**
+
+## 2026-09-17 — Project root tidied: docs/ and outputs/ folders
+
+**Files touched:**
+- Moved with `git mv`: `DATA_DICTIONARY.txt` → `docs/DATA_DICTIONARY.txt`,
+  and `fairness_report.txt` → `docs/fairness_report.txt`.
+- Moved on disk (not tracked): `AUDIT.md` → `docs/AUDIT.md`, and
+  `stage1_v2.json` → `outputs/stage1_v2.json`.
+- New: `outputs/.gitkeep`.
+- Edited: `.gitignore`, `.dockerignore`, `fairness_analysis.py`, `explain.py`,
+  `tests/test_explain.py`, `tests/test_narrate_live.py`.
+- Local only (gitignored): `.vscode/settings.json`, new.
+- `CLAUDE.md` is logged in its own entry below.
+
+**What changed:**
+- Reference documents now live in `docs/`.
+- Results of runs go in `outputs/`. Its contents are gitignored, but
+  `outputs/.gitkeep` is committed so the folder exists on a fresh clone and
+  `NARRATE_RESULTS=outputs/<name>.json` works without creating it first.
+- `.gitignore` ignores `docs/AUDIT.md` (was `AUDIT.md`) and `outputs/*`
+  except `.gitkeep`.
+- `.dockerignore` excludes `docs/` and `outputs/` from the build context. The
+  Dockerfile copies no file from either, so the image is unaffected.
+- Path mentions were updated in comments and docstrings only:
+  - the example `--out docs/fairness_report.txt` in `fairness_analysis.py`
+  - the `DATA_DICTIONARY.txt` source note in `explain.py` and
+    `tests/test_explain.py`
+  - the `NARRATE_RESULTS` example in `tests/test_narrate_live.py`
+- `.vscode/settings.json` hides `__pycache__`, `.pytest_cache` and `.venv`
+  from the VS Code Explorer. It's local only, and the folders still exist.
+
+**Why:** Requested: "my files are messy… can you organize them". The user
+chose the light tidy but asked for it to be future-proof for the planned
+"medium" layout (`data/` and `model/`). The folder names used here fit that
+layout, and CLAUDE.md now records it as the planned next step (entry below).
+
+**Requested or incidental:** Requested.
+- **Deliberately not moved:** the data and model files, the notebook and the
+  Python modules. That is the medium/full scope the user did not choose.
+- **Left in the root:** `retention_campaign_targets.csv`, because
+  `telco_model.py` writes it there by default, and moving it would change code
+  and tests.
+- **Untouched:** `.claude/`, an untracked local folder.
+
+**Verification status:** `uv run pytest -q`: 412 passed, 1 skipped, 8 live
+deselected. `git check-ignore` confirmed that `outputs/stage1_v2.json`,
+`docs/AUDIT.md` and `.vscode/settings.json` are ignored and
+`outputs/.gitkeep` is not. The Dockerfile's `COPY` lines were checked, and
+none reference a moved file. No Docker build was run. **Not committed.**
+
+## 2026-09-17 — CLAUDE.md: new folders in the layout table, and a "Where files go" section
+
+**Files touched:** `CLAUDE.md`.
+
+**What changed:**
+- **Layout table:**
+  - The `AUDIT.md` row now points to `docs/AUDIT.md`, and notes that the many
+    "AUDIT.md M9"-style citations mean that file.
+  - New rows for `docs/`, `outputs/`, `prompts/` and `frontend/`.
+- **New "Where files go" section**, placed before the notebook cell map:
+  - Where new documents, run outputs, prompts and notebooks belong.
+  - The deferred "medium" layout (`data/` for the CSV and baseline JSON,
+    `model/` for the pickle and metadata). Those names are marked reserved.
+  - A checklist of everything that has to change together when that move
+    happens: config paths, Dockerfile, CI, the environment check and
+    verification script, tests, the notebook's save cells, README.
+
+**Why:** Keeps CLAUDE.md true after the reorganisation above. It also puts
+the user's "future proof, so I don't have to reorganise again" request where
+the next session will read it before adding files.
+
+**Requested or incidental:** Incidental: a documentation consequence of the
+requested reorganisation.
+
+**Verification status:** Documentation only. The folder rows describe what
+now exists on disk. `explain.py` and `narrate.py` still have no rows of their
+own in the layout table, which is existing drift and was left alone.
+
+## 2026-09-17 — Second live LLM run (stage 1 on prompt v2), run by the user
+
+**Files touched:** `CHANGELOG.md` only (this entry). The results file is
+`outputs/stage1_v2.json` (gitignored).
+
+**What happened:** The user ran `tests/test_narrate_live.py` against the
+real API with `NARRATE_RESULTS` set. Whether every test passed wasn't
+reported; the saved file is the evidence.
+
+**Spend:** The 8 saved narrations are 8 calls, 5,048 input and 742 output
+tokens, all accepted first time, all `finish_reason` "stop". The 2
+determinism calls aren't saved and are estimated at the same size. That is
+about **10 calls and ~$0.0015**. **Cumulative ~$0.0029 of $0.50.**
+
+**Result:**
+- **Guards:** the first-attempt rejection rate was **0/8**, with no retries.
+  The strict JSON schema was accepted by the API, the first real test of
+  that.
+- **The v1 failures are gone from this sample:**
+  - no percentages
+  - customer row 7 is now described as "with us for 68 months, which is also
+    well above typical", which is correct
+  - no directions or sizes that contradict the payload
+
+**What reading the outputs against their payloads found (candidates for a
+prompt v3 before stage 2):**
+1. **The comparison wording is parroted.** Summaries repeat "well above
+   typical" verbatim, and 4 of 8 describe "contract length compared to their
+   tenure" as above or below typical, which is the engineered feature's
+   jargon, not plain English for a manager.
+2. **Meta-commentary on the decision.** 7 of 8 comment on the decision
+   itself: 4 say "the decision to not target them is appropriate", 2 more say
+   it is "suitable" or "supporting", and row 7 says "I agree with the
+   decision". That's the model talking about itself; the prompt asks it to
+   describe the customer.
+
+Neither is caught by the guards, and neither is a false claim.
+
+**Requested or incidental:** A record of a user-run live stage.
+
+**Verification status:** Numbers read from `outputs/stage1_v2.json`. The
+determinism calls' cost is an estimate. No code changed.
+
+## 2026-09-17 — Checkpoint commit of all work since 5c6fe1a
+
+**Files touched:** `CHANGELOG.md` (this entry). The commit itself contains:
+- the GenAI layer: `explain.py`, `narrate.py`, `prompts/explanation_v1.txt`,
+  `prompts/explanation_v2.txt`, `tests/test_explain.py`,
+  `tests/test_narrate.py`, `tests/test_narrate_live.py`, `tests/conftest.py`,
+  `pyproject.toml` and `uv.lock`
+- the frontend restyle: `frontend/index.html`
+- the reorganisation: `docs/DATA_DICTIONARY.txt`, `docs/fairness_report.txt`,
+  `outputs/.gitkeep`, `.gitignore`, `.dockerignore`, `fairness_analysis.py`
+  and `CLAUDE.md`
+- `telco_customer_churn.ipynb`
+
+**What changed:** Every earlier entry marked "Not committed" since 5c6fe1a
+is committed together as one checkpoint on `main`. That covers the GenAI
+entries from 2026-09-02, both live-run entries, prompt v2, both frontend
+entries and the reorganisation. Nothing was pushed.
+
+**Why:** Requested: "commit everything up until now and we will move on
+later."
+
+**Requested or incidental:** Requested. **Incidental, flagged separately:**
+- `telco_customer_churn.ipynb` is included, but its diff is only an editor
+  re-save: unicode escapes written as literal characters and regenerated
+  dataframe-widget ids. No code or output changed.
+- **Deliberately left out:** `.claude/settings.json`, a local assistant
+  permission file and not project content. `.env`, `outputs/stage1_v2.json`
+  and `docs/AUDIT.md` are gitignored and were not committed.
+
+**Verification status:** `uv run pytest -q` passed just before committing. The
+staged diff was scanned for API keys (`sk-`), and none were found.

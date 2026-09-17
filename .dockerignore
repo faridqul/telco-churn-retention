@@ -31,8 +31,11 @@ tests/
 README.md
 CHANGELOG.md
 CLAUDE.md
-AUDIT.md
 LICENSE
+docs/
+
+# Run results (LLM live runs and similar); nothing in the image reads them.
+outputs/
 
 # Regenerated on every scoring run; the container writes its own.
 retention_campaign_targets.csv

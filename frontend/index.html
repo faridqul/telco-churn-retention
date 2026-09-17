@@ -3,63 +3,151 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Churn Prediction Demo</title>
+<title>Churn Desk</title>
+<!-- IBM Plex: a plain, technical face that suits an operations tool. The
+     fallback stacks below take over when the page is opened offline. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <style>
   /* ---------------------------------------------------------------
-     Plain CSS, no framework. Variables at the top so every colour is
-     changed in one place instead of hunted through the file.
+     Plain CSS, no framework. Every colour is a variable defined once
+     below, then redefined for dark mode, so the palette is changed in
+     one place instead of hunted through the file.
      --------------------------------------------------------------- */
   :root {
-    --bg: #f4f6f8;
+    --bg: #edf1f0;
     --card: #ffffff;
-    --text: #1a2027;
-    --muted: #5c6b7a;
-    --border: #d8dee5;
-    --accent: #2563eb;
+    --text: #13242a;
+    --muted: #5b6c71;
+    --border: #d3dcdb;
+    --field: #f7f9f9;
+    --accent: #0d7472;
+    --accent-soft: #dcefed;
+    --on-accent: #ffffff;
+    --bar: #13242a;
+    --bar-text: #e6eeee;
+    --bar-muted: #8fa5a8;
+    --track: #e1e7e6;
     --danger: #b42318;
-    --danger-bg: #fef3f2;
-    --ok: #067647;
-    --ok-bg: #ecfdf3;
+    --danger-bg: #fdf0ee;
+    --danger-zone: #f6d5d0;
+    --ok: #0b6b3a;
+    --ok-bg: #e7f4ec;
+    --shadow: 0 1px 2px rgba(19, 36, 42, .06), 0 4px 16px rgba(19, 36, 42, .05);
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0c1518;
+      --card: #132126;
+      --text: #e2ebeb;
+      --muted: #93a7aa;
+      --border: #24373c;
+      --field: #0f1b1f;
+      --accent: #3db3ab;
+      --accent-soft: #173936;
+      --on-accent: #06201e;
+      --bar: #08100f;
+      --bar-text: #e2ebeb;
+      --bar-muted: #7f9699;
+      --track: #1d2e33;
+      --danger: #f08a7e;
+      --danger-bg: #2f1a18;
+      --danger-zone: #4a2622;
+      --ok: #72d29f;
+      --ok-bg: #14301f;
+      --shadow: none;
+    }
   }
 
   * { box-sizing: border-box; }
 
   body {
     margin: 0;
-    padding: 2rem 1rem;
     background: var(--bg);
     color: var(--text);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-family: var(--sans);
     line-height: 1.5;
   }
 
-  .page { max-width: 900px; margin: 0 auto; }
+  /* Top bar ------------------------------------------------------- */
+  .topbar {
+    background: var(--bar);
+    color: var(--bar-text);
+    padding: .9rem 1rem;
+  }
+  .topbar-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: .25rem 1.5rem;
+  }
+  .brand { font-weight: 700; font-size: 1.05rem; letter-spacing: .01em; margin: 0; }
+  .brand span { color: var(--accent); }
+  .topbar p { margin: 0; color: var(--bar-muted); font-size: .85rem; }
 
-  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
-  .subtitle { color: var(--muted); margin: 0 0 1.5rem; }
+  .page { max-width: 1180px; margin: 0 auto; padding: 1.75rem 1rem 3rem; }
+
+  h1 {
+    font-size: 1.6rem;
+    line-height: 1.2;
+    margin: 0 0 .35rem;
+    text-wrap: balance;
+  }
+  .subtitle { color: var(--muted); margin: 0 0 1.5rem; max-width: 62ch; }
+
+  /* Form on the left, result on the right. The result column sticks,
+     so the answer stays in view next to a long form instead of
+     appearing below it, out of sight. One column on narrow screens. */
+  .layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.25rem;
+    align-items: start;
+  }
+  @media (min-width: 960px) {
+    .layout { grid-template-columns: minmax(0, 1fr) 360px; }
+    .side {
+      position: sticky;
+      top: 1rem;
+      max-height: calc(100vh - 2rem);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      /* Room for the cards' shadows, which overflow would otherwise clip. */
+      padding: 2px 6px 4px 2px;
+      margin: -2px -6px -4px -2px;
+    }
+  }
+  .side { display: grid; gap: 1.25rem; }
 
   .card {
     background: var(--card);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 1.25rem;
-    margin-bottom: 1.25rem;
+    border-radius: 12px;
+    padding: 1.25rem 1.35rem;
+    box-shadow: var(--shadow);
   }
 
   fieldset {
     border: none;
     border-top: 1px solid var(--border);
-    padding: 1rem 0 0;
+    padding: 1.1rem 0 0;
     margin: 0 0 1.25rem;
   }
   fieldset:first-of-type { border-top: none; padding-top: 0; }
 
   legend {
     font-weight: 600;
-    font-size: .8rem;
+    font-size: .75rem;
     text-transform: uppercase;
-    letter-spacing: .04em;
-    color: var(--muted);
+    letter-spacing: .08em;
+    color: var(--accent);
     padding: 0;
   }
 
@@ -67,114 +155,286 @@
      compact on a laptop and stacks to one column on a phone. */
   .fields {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: .9rem;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: .9rem 1rem;
     margin-top: .75rem;
   }
+  /* Controls sit on a shared baseline even when one label has a hint
+     line under it and its neighbour doesn't. */
+  .fields > div {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+  }
 
-  label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: .25rem; }
+  label { display: block; font-size: .85rem; font-weight: 500; margin-bottom: .3rem; }
   .hint { display: block; font-weight: 400; color: var(--muted); font-size: .75rem; }
 
   select, input {
     width: 100%;
-    padding: .5rem;
+    padding: .55rem .65rem;
     border: 1px solid var(--border);
-    border-radius: 6px;
-    background: var(--card);
+    border-radius: 8px;
+    background-color: var(--field);
     color: var(--text);
     font: inherit;
     font-size: .9rem;
+    transition: border-color .15s, background-color .15s;
   }
-  select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  input[type="number"], #api-url { font-family: var(--mono); font-size: .85rem; }
+  select {
+    appearance: none;
+    padding-right: 2rem;
+    /* A chevron drawn in CSS, so the arrow follows the theme colour. */
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 55%, calc(100% - 10px) 55%;
+    background-size: 5px 5px;
+    background-repeat: no-repeat;
+  }
+  select:hover, input:hover { border-color: var(--muted); }
+  select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    background-color: var(--card);
+  }
+
+  /* The submit button lives in the result column, not at the bottom of
+     the form, so it is on screen without scrolling. It is still the
+     form's submit button (form="customer-form"), so Enter in any field
+     submits too. On narrow screens the column sits below the form, so
+     the card is pinned to the bottom of the viewport instead. */
+  .run {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .6rem 1rem;
+  }
+  .run button { flex: 1 1 auto; }
+  .run p { margin: 0; color: var(--muted); font-size: .8rem; flex: 1 1 100%; }
+  @media (max-width: 959px) {
+    body { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+    .run {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 10;
+      border-radius: 0;
+      border-width: 1px 0 0;
+      padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom, 0px));
+    }
+    .run p { display: none; }
+  }
 
   button {
-    padding: .65rem 1.4rem;
+    padding: .7rem 1.5rem;
     border: none;
-    border-radius: 6px;
+    border-radius: 8px;
     background: var(--accent);
-    color: #fff;
+    color: var(--on-accent);
     font: inherit;
     font-weight: 600;
     cursor: pointer;
+    transition: filter .15s, transform .05s;
   }
+  button:hover { filter: brightness(1.08); }
+  button:active { transform: translateY(1px); }
+  button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
   button:disabled { opacity: .6; cursor: progress; }
 
   /* Result panel -------------------------------------------------- */
-  .probability { font-size: 2.5rem; font-weight: 700; margin: 0; }
-  .probability-raw { color: var(--muted); font-size: .8rem; margin: 0 0 1rem; }
+  .panel-label {
+    margin: 0 0 .75rem;
+    font-size: .75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+  }
+
+  .placeholder p { margin: 0; color: var(--muted); font-size: .9rem; }
+  .placeholder .gauge { opacity: .45; }
+
+  .probability {
+    font-family: var(--mono);
+    font-size: 3rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: -.02em;
+    margin: 0 0 .35rem;
+    font-variant-numeric: tabular-nums;
+  }
+  .probability-raw {
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: .72rem;
+    margin: 0 0 .9rem;
+    overflow-wrap: anywhere;
+  }
 
   .badge {
-    display: inline-block;
-    padding: .3rem .7rem;
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .3rem .75rem;
     border-radius: 999px;
     font-size: .85rem;
     font-weight: 600;
   }
+  .badge::before {
+    content: "";
+    width: .5rem;
+    height: .5rem;
+    border-radius: 50%;
+    background: currentColor;
+  }
   .badge.target { background: var(--danger-bg); color: var(--danger); }
   .badge.no-target { background: var(--ok-bg); color: var(--ok); }
 
-  /* A bar showing where this customer's score sits relative to the
-     threshold. The score is the model's output; the threshold is a
-     separate business decision. Drawing both makes that visible. */
-  .bar {
+  /* Where this customer's score sits relative to the threshold. The
+     score is the model's output; the threshold is a separate business
+     decision. The track is shaded from the threshold up -- the zone
+     where a customer gets targeted -- so the two read as separate
+     things. --t is the threshold and --p the score, both as percents. */
+  .gauge { margin: 2.1rem 0 .4rem; }
+  .gauge-track {
     position: relative;
     height: 12px;
-    background: #e5e9ee;
     border-radius: 999px;
-    margin: 1rem 0 .4rem;
-    overflow: visible;
+    background:
+      linear-gradient(to right, var(--track) var(--t), var(--danger-zone) var(--t));
   }
-  .bar-fill { height: 100%; background: var(--accent); border-radius: 999px; }
-  .bar-threshold {
+  .gauge-fill {
+    height: 100%;
+    width: var(--p);
+    border-radius: 999px;
+    background: var(--accent);
+  }
+  .gauge.target .gauge-fill { background: var(--danger); }
+  .gauge-threshold {
     position: absolute;
-    top: -4px;
+    left: var(--t);
+    top: -6px;
     width: 2px;
-    height: 20px;
+    height: 24px;
     background: var(--text);
+    transform: translateX(-1px);
   }
-  .bar-labels {
+  .gauge-threshold span {
+    position: absolute;
+    bottom: calc(100% + .2rem);
+    left: 50%;
+    transform: translateX(-50%);
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: .7rem;
+    color: var(--muted);
+  }
+  .gauge-labels {
     display: flex;
     justify-content: space-between;
-    font-size: .75rem;
+    margin-top: .35rem;
+    font-family: var(--mono);
+    font-size: .7rem;
     color: var(--muted);
   }
 
   .explain {
-    margin: 1rem 0 0;
+    margin: 1.1rem 0 0;
     padding-top: 1rem;
     border-top: 1px solid var(--border);
     font-size: .875rem;
     color: var(--muted);
   }
+  .explain strong { color: var(--text); font-family: var(--mono); font-weight: 600; }
 
   /* Error panel --------------------------------------------------- */
-  .error { border-color: #f5c6c2; background: var(--danger-bg); }
+  .error { border-color: var(--danger-zone); background: var(--danger-bg); }
   .error h2 { color: var(--danger); font-size: 1.05rem; margin: 0 0 .5rem; }
+  .error p { margin: 0 0 .5rem; }
   .error ul { margin: .5rem 0 0; padding-left: 1.2rem; font-size: .875rem; }
   .error li { margin-bottom: .3rem; }
-  .error code { background: rgba(0,0,0,.06); padding: .1rem .3rem; border-radius: 3px; }
+  .error code, .connection code {
+    font-family: var(--mono);
+    font-size: .85em;
+    background: rgba(127, 127, 127, .15);
+    padding: .1rem .3rem;
+    border-radius: 4px;
+    overflow-wrap: anywhere;
+  }
+
+  .connection label { margin-bottom: .45rem; }
+
+  /* AI explanation ------------------------------------------------ */
+  .ai-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+    margin-bottom: .75rem;
+  }
+  .ai-head .panel-label { margin: 0; }
+  .pill {
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    padding: .15rem .55rem;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .ai-note { margin: 0 0 .9rem; color: var(--muted); font-size: .85rem; }
+  .ai-slot-label {
+    margin: .9rem 0 .35rem;
+    font-size: .72rem;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  /* Grey bars standing in for text that doesn't exist yet. */
+  .skeleton {
+    height: .65rem;
+    border-radius: 4px;
+    background: var(--track);
+    margin-bottom: .4rem;
+  }
+  .reasons { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
+  .reasons li {
+    display: flex;
+    justify-content: space-between;
+    gap: .75rem;
+    font-size: .85rem;
+  }
+  .reasons .up { color: var(--danger); }
+  .reasons .down { color: var(--ok); }
+  .ai-summary { margin: 0; font-size: .9rem; }
 
   .hidden { display: none; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
 </style>
 </head>
 <body>
-<div class="page">
+<header class="topbar">
+  <div class="topbar-inner">
+    <p class="brand">Churn<span>Desk</span></p>
+    <p>Telco churn model &middot; retention targeting</p>
+  </div>
+</header>
 
-  <h1>Telco Churn Prediction</h1>
+<main class="page">
+
+  <h1>Should we call this customer?</h1>
   <p class="subtitle">
     Enter a customer's details to get a churn probability and a retention
     recommendation from the model.
   </p>
 
-  <!-- API URL is a visible field, not a constant buried in the code, so
-       the same file works against localhost and a deployed API. -->
-  <div class="card">
-    <label for="api-url">
-      API base URL
-      <span class="hint">Where the FastAPI service is running. No trailing slash needed.</span>
-    </label>
-    <input id="api-url" type="text" value="http://localhost:8000">
-  </div>
+  <div class="layout">
 
   <form id="customer-form" class="card">
 
@@ -343,14 +603,69 @@
       </div>
     </fieldset>
 
-    <button id="submit-button" type="submit">Predict churn</button>
   </form>
 
-  <!-- Both panels start hidden and only one is ever shown at a time. -->
-  <div id="result" class="card hidden"></div>
-  <div id="error" class="card error hidden"></div>
+  <aside class="side">
+    <div class="card run">
+      <button id="submit-button" type="submit" form="customer-form">Predict churn</button>
+      <p>Sends one request to <code>/predict</code>. Nothing is stored.</p>
+    </div>
 
-</div>
+    <!-- Shown until the first answer arrives, so the result column is
+         never an empty gap. The three panels below are mutually
+         exclusive; show() hides the other two. -->
+    <div id="placeholder" class="card placeholder">
+      <p class="panel-label">Result</p>
+      <p>No customer scored yet. Fill in the form and press
+        <strong>Predict churn</strong>.</p>
+      <div class="gauge" style="--t: 40%; --p: 0%">
+        <div class="gauge-track">
+          <div class="gauge-fill"></div>
+          <div class="gauge-threshold"><span>threshold</span></div>
+        </div>
+        <div class="gauge-labels"><span>0%</span><span>50%</span><span>100%</span></div>
+      </div>
+    </div>
+    <div id="result" class="card hidden"></div>
+    <div id="error" class="card error hidden"></div>
+
+    <!-- API URL is a visible field, not a constant buried in the code, so
+         the same file works against localhost and a deployed API. -->
+    <!-- The AI explanation. Not wired up yet: it needs the /explain
+         endpoint (step three of the GenAI plan), which doesn't exist.
+         The slots match narrate.py's structured output -- risk_level,
+         reasons[{field, direction}], summary -- and showExplanation()
+         below renders that shape once there is something to call. -->
+    <div id="ai-explanation" class="card">
+      <div class="ai-head">
+        <p class="panel-label">AI explanation</p>
+        <span class="pill">Coming soon</span>
+      </div>
+      <p class="ai-note">Why the model reached this decision, in plain
+        English. Every sentence is checked against the model's own
+        numbers before it is shown.</p>
+      <p class="ai-slot-label">Risk level</p>
+      <div class="skeleton" style="width: 30%"></div>
+      <p class="ai-slot-label">Top reasons</p>
+      <div class="skeleton" style="width: 80%"></div>
+      <div class="skeleton" style="width: 65%"></div>
+      <div class="skeleton" style="width: 72%"></div>
+      <p class="ai-slot-label">Summary</p>
+      <div class="skeleton" style="width: 100%"></div>
+      <div class="skeleton" style="width: 90%"></div>
+    </div>
+
+    <div class="card connection">
+      <label for="api-url">
+        API base URL
+        <span class="hint">Where the FastAPI service is running. No trailing slash needed.</span>
+      </label>
+      <input id="api-url" type="text" value="http://localhost:8000">
+    </div>
+  </aside>
+
+  </div>
+</main>
 
 <script>
 /* =================================================================
@@ -369,6 +684,7 @@ const submitButton = document.getElementById("submit-button");
 const apiUrlInput = document.getElementById("api-url");
 const resultPanel = document.getElementById("result");
 const errorPanel = document.getElementById("error");
+const placeholderPanel = document.getElementById("placeholder");
 
 
 /* Read the form into the object shape api.py's Customer model expects. */
@@ -397,6 +713,7 @@ function buildCustomer() {
 /* Only one panel visible at a time, so an old result can't sit next to
    a fresh error and look like it belongs to it. */
 function show(panel, html) {
+  placeholderPanel.classList.add("hidden");
   resultPanel.classList.add("hidden");
   errorPanel.classList.add("hidden");
   panel.innerHTML = html;
@@ -410,6 +727,7 @@ function showResult(data) {
   const comparison = flagged ? "at or above" : "below";
 
   show(resultPanel, `
+    <p class="panel-label">Result</p>
     <p class="probability">${percent}%</p>
     <p class="probability-raw">churn probability (exact: ${data.churn_probability})</p>
 
@@ -417,11 +735,14 @@ function showResult(data) {
       ${flagged ? "Target for retention" : "Do not target"}
     </span>
 
-    <div class="bar">
-      <div class="bar-fill" style="width: ${percent}%"></div>
-      <div class="bar-threshold" style="left: ${data.threshold_used * 100}%"></div>
+    <div class="gauge ${flagged ? "target" : ""}"
+         style="--t: ${data.threshold_used * 100}%; --p: ${percent}%">
+      <div class="gauge-track">
+        <div class="gauge-fill"></div>
+        <div class="gauge-threshold"><span>threshold ${data.threshold_used}</span></div>
+      </div>
+      <div class="gauge-labels"><span>0%</span><span>50%</span><span>100%</span></div>
     </div>
-    <div class="bar-labels"><span>0%</span><span>100%</span></div>
 
     <p class="explain">
       The decision threshold is <strong>${data.threshold_used}</strong> (the
@@ -450,6 +771,38 @@ function showValidationError(detail) {
     <p>Nothing was scored. Fix the field(s) below and try again.</p>
     <ul>${list || "<li>No details were provided.</li>"}</ul>
   `);
+}
+
+
+/* Renders narrate.py's structured output into the AI card. Not called
+   anywhere yet -- there is no /explain endpoint to fetch it from. Text
+   goes in through textContent, never innerHTML: this string is written
+   by a language model. */
+function showExplanation(structured) {
+  const card = document.getElementById("ai-explanation");
+  card.innerHTML = `
+    <div class="ai-head">
+      <p class="panel-label">AI explanation</p>
+      <span class="pill"></span>
+    </div>
+    <p class="ai-slot-label">Top reasons</p>
+    <ul class="reasons"></ul>
+    <p class="ai-slot-label">Summary</p>
+    <p class="ai-summary"></p>
+  `;
+  card.querySelector(".pill").textContent = structured.risk_level + " risk";
+  const list = card.querySelector(".reasons");
+  for (const reason of structured.reasons) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    const direction = document.createElement("span");
+    name.textContent = reason.field;
+    direction.textContent = reason.direction;
+    direction.className = reason.direction === "raises risk" ? "up" : "down";
+    item.append(name, direction);
+    list.append(item);
+  }
+  card.querySelector(".ai-summary").textContent = structured.summary;
 }
 
 

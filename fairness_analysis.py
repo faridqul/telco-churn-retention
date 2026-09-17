@@ -8,7 +8,7 @@ from the same seed the notebook uses.
 
 Run:  uv run python fairness_analysis.py
       uv run python fairness_analysis.py --with-oof     (refits -- see below)
-      uv run python fairness_analysis.py --out fairness_report.txt
+      uv run python fairness_analysis.py --out docs/fairness_report.txt
 
 WHY THE SPLIT IS RECONSTRUCTED RATHER THAN LOADED
 The notebook caches only the fitted pipeline and a 50-row sample CSV; it does

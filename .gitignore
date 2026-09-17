@@ -29,4 +29,13 @@ venv/
 .idea/
 
 # Local scratch notes (kept on disk, not part of the repo)
-AUDIT.md
+docs/AUDIT.md
+
+# Results of runs -- LLM live runs, reports, anything a script writes that
+# can be regenerated. The folder itself is kept (.gitkeep) so a path like
+# outputs/stage1_v2.json works on a fresh clone.
+outputs/*
+!outputs/.gitkeep
+
+.env
+.env.*
