@@ -11,6 +11,10 @@ never touches them. Run them deliberately:
 Expected cost at prompt v2: 10 calls (8 customers + 2 for the determinism
 check), plus one per retry, at roughly $0.00015 each -- about $0.0015.
 
+If LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are in .env, every call is also
+traced to Langfuse under one session per run (llm_tracing.py). Tracing adds no
+model calls.
+
 Set NARRATE_RESULTS=outputs/<name>.json to save every result, payloads and
 attempts included, so the run can be reviewed again without paying for it.
 
@@ -34,6 +38,7 @@ import pandas as pd
 import pytest
 
 import explain
+import llm_tracing
 import narrate
 
 pytestmark = [
@@ -58,7 +63,18 @@ def pipeline():
 
 
 @pytest.fixture(scope="module")
-def results(client, pipeline):
+def tracer():
+    """Langfuse when its keys are set, otherwise a tracer that does nothing.
+    Flushed at the end, or a short test run can exit before traces are sent."""
+    tracer = llm_tracing.from_env(
+        session_id=llm_tracing.session_id(f"live-{narrate.PROMPT_VERSION}")
+    )
+    yield tracer
+    tracer.flush()
+
+
+@pytest.fixture(scope="module")
+def results(client, pipeline, tracer):
     """One narration per sampled customer. Module-scoped so the whole file
     costs one batch of calls rather than one per test."""
     frame = pd.read_csv(narrate.REPO_ROOT / "simulated_new_customers.csv")
@@ -67,7 +83,9 @@ def results(client, pipeline):
         explanation = explain.explain_customer(
             frame.iloc[i].to_dict(), model=pipeline, top_n=None
         )
-        out.append(narrate.narrate(explanation, client=client))
+        out.append(narrate.narrate(
+            explanation, client=client, tracer=tracer, trace_label=f"row {i}",
+        ))
     if os.environ.get("NARRATE_RESULTS"):
         with open(os.environ["NARRATE_RESULTS"], "w") as handle:
             json.dump(out, handle, indent=2)
@@ -91,7 +109,11 @@ def test_accepted_narratives_pass_the_guards_again(results):
         if not result["narrative_available"]:
             continue
         payload = narrate.narration_payload(result)
-        assert narrate.validate_narrative(result["narrative"], payload)[1] is None
+        # The raw JSON reply, not result["narrative"]: since prompt v2 the
+        # narrative is only the summary field, which isn't valid input to the
+        # guards on its own. Checking it failed every accepted result.
+        accepted_text = result["attempts"][-1]["text"]
+        assert narrate.validate_narrative(accepted_text, payload)[1] is None
 
 
 def test_every_accepted_output_repeats_the_payloads_risk_level(results):
@@ -126,7 +148,7 @@ def test_accounting_fields_come_back_populated(results):
             assert attempt["completion_tokens"] and attempt["completion_tokens"] > 0
 
 
-def test_temperature_zero_gives_the_same_text_twice(client, pipeline):
+def test_temperature_zero_gives_the_same_text_twice(client, pipeline, tracer):
     """Determinism is what makes caching sound and what lets step four
     measure the prompt rather than sampling noise. Not guaranteed by the
     API, so this is a check rather than an assumption -- if it starts
@@ -134,8 +156,10 @@ def test_temperature_zero_gives_the_same_text_twice(client, pipeline):
     from config import DUMMY_CUSTOMER
 
     explanation = explain.explain_customer(DUMMY_CUSTOMER, model=pipeline, top_n=None)
-    first = narrate.narrate(explanation, client=client)
-    second = narrate.narrate(explanation, client=client)
+    first = narrate.narrate(explanation, client=client, tracer=tracer,
+                            trace_label="DUMMY_CUSTOMER, determinism 1")
+    second = narrate.narrate(explanation, client=client, tracer=tracer,
+                             trace_label="DUMMY_CUSTOMER, determinism 2")
     assert first["narrative"] == second["narrative"]
 
 

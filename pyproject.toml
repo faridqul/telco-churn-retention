@@ -36,9 +36,11 @@ dev = [
 # third-party network call, and adding it to the runtime set would grow the
 # production image for a feature the image does not serve. narrate.py imports
 # the SDK lazily, inside OpenAIClient.__init__, so everything except a real
-# API call works without this group installed. Install with
-# `uv sync --group llm`.
+# API call works without this group installed. langfuse is the optional
+# tracing SDK (llm_tracing.py), imported just as lazily and only used when its
+# keys are set. Install with `uv sync --group llm`.
 llm = [
+    "langfuse>=4.15",
     "openai>=1.0.0",
 ]
 

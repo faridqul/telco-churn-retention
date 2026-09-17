@@ -42,6 +42,8 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), and the local `AUDIT.md`. |
 | `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
 | `prompts/` | Versioned LLM system prompts. `narrate.py` loads one; tests pin each file's sha256. Never edit a prompt in place — add `explanation_vN+1.txt`. |
+| `llm_tracing.py` | Optional Langfuse tracing for `narrate()`: one trace per narration, one generation per API attempt, guard verdicts as scores, session per run. **Off unless handed a tracer**; `from_env()` is a no-op without `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`. Every SDK call is wrapped so a Langfuse failure only warns and never changes a result. `--check` tests the keys; `--backfill outputs/x.json` uploads a saved run with no model calls. SDK (v4, `llm` group) imported lazily. Tested offline against the real SDK with an in-memory exporter (`tests/test_llm_tracing.py`). |
+| `LLMcalls.ipynb` | Read-only viewer for saved LLM runs in `outputs/*.json`: overview and cost, the system prompt, one input/output card per customer, a summaries table, token/latency/length plots, and a phrase-flagging aid. **Makes no API calls.** Uses `narrate.rejection_rates()` rather than recomputing rates. Stored with outputs (~160 KB). |
 | `frontend/` | `index.html`, a single static page calling `/predict`. No build step. |
 
 ## Where files go

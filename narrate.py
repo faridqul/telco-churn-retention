@@ -6,6 +6,8 @@ Run:  uv run python narrate.py --dummy
 
 Needs an API key:  export OPENAI_API_KEY=...   (or `uv run --env-file .env ...`)
 Needs the client:  uv sync --group llm
+Optional tracing:  LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY in .env send every
+                   run to Langfuse; see llm_tracing.py.
 
 THE SHAPE OF THIS MODULE
     narration_payload()  ->  the LLM  ->  validate_narrative()
@@ -36,8 +38,9 @@ All are silent, and none looks wrong on the page.
   3. A MISDESCRIBED VALUE. Found in the first live run (prompt v1,
      2026-09-17): a customer who had paid $5,762.95 -- about 4x the training
      median -- was described as having "a lower total charged to date". The
-     name and the direction were right; the adjective was invented. Prompt v2
-     hands the model the comparison ("well above typical"), so there is
+     name and the direction were right; the adjective was invented. Since v2
+     the model is handed the comparison (now "much higher than most
+     customers"), so there is
      nothing to guess, and the misstated_factor guard rejects an adjective
      that disagrees with it.
 
@@ -49,6 +52,17 @@ alias guessing. The summary is still prose, so the prose guards still run on
 it. v2 also stops sending the raw probability: the scores are uncalibrated
 (README), and v1 quoted them as "61.51%". The model gets a risk band instead,
 and the only numbers it may write are factor values.
+
+PROMPT v3: WHY, NOT WHETHER
+v2's live run (8 customers) was accepted in full and still read badly: 6 of 8
+summaries repeated the payload's "well above typical" verbatim, 7 of 8
+commented on the decision ("the decision to not target them is appropriate",
+once "I agree with the decision"), and 4 of 8 called contractvstenure
+"contract length compared to tenure" -- it is the two multiplied. v3 answers
+each: comparisons are sent as plain words ("much higher than most
+customers"), the decision is no longer sent and commenting on it is rejected
+as `commentary`, and the feature's label now says what it is. Engineered
+features stay in the top three; they are often genuinely strong drivers.
 
 RETRY POLICY
 One retry, two attempts maximum. Both attempts are recorded separately and are
@@ -76,6 +90,7 @@ from typing import Protocol
 import pandas as pd
 
 import explain
+import llm_tracing
 from config import DUMMY_CUSTOMER, validate_input_frame
 
 # --------------------------------------------------------------------------
@@ -84,9 +99,9 @@ from config import DUMMY_CUSTOMER, validate_input_frame
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# v1 (prompts/explanation_v1.txt) is kept in the repo, unused, because the
-# stage-1 live results in CHANGELOG.md are a measurement of that exact file.
-PROMPT_PATH = REPO_ROOT / "prompts" / "explanation_v2.txt"
+# v1 and v2 are kept in prompts/, unused, because the live results in
+# CHANGELOG.md (and outputs/stage1_v2.json) are measurements of those files.
+PROMPT_PATH = REPO_ROOT / "prompts" / "explanation_v3.txt"
 
 # The prompt's identity, carried in every result so a logged explanation can be
 # traced back to the exact text that produced it. tests/test_narrate.py pins
@@ -147,10 +162,11 @@ REJECTION_TYPES = (
     "unlisted_field",
     "hallucinated_number",
     "decision_contradiction",
+    "commentary",
     "misstated_factor",
 )
 
-# Yes/no flags stored as 0/1. A median of 0 makes "well above typical" true of
+# Yes/no flags stored as 0/1. A median of 0 makes "much higher" true of
 # every customer who has the flag, which says nothing, so these get "yes"/"no"
 # and no comparison.
 _BINARY_FIELDS = frozenset({"is_auto_pay", "seniorcitizen", "family_tie"})
@@ -240,7 +256,10 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "one year", "one-year", "two year", "two-year", "annual plan",
         "no commitment", "rolling plan",
     ),
-    "contractvstenure": ("contract length weighted by tenure", "contract weighted"),
+    "contractvstenure": (
+        "overall commitment", "commitment level", "commitment",
+        "contract length weighted by tenure", "contract weighted",
+    ),
     # Services.
     "phoneservice": ("phone service",),
     "multiplelines": ("multiple lines", "multiple phone lines", "additional lines"),
@@ -303,8 +322,22 @@ _HIGH_RISK_PHRASES = (
     "at risk of leaving", "urgent", "immediate action", "act now",
 )
 
+# The summary explains why; it doesn't judge the decision or speak as itself.
+# v2 did both in 7 of 8 live outputs. The decision is shown next to the
+# summary anyway, so commentary on it only adds words, and "I agree" presents
+# a rephrasing step as if it had evaluated something. Whole phrases, so "been
+# with us" and "a single month" are untouched.
+_COMMENTARY_PHRASES = (
+    "decision", "decided", "appropriate", "suitable", "recommend",
+    "recommended", "should be targeted", "should not be targeted",
+    "worth targeting", "not worth", "target them", "targeting them",
+    "retention effort", "retention efforts", "retention call", "reach out",
+)
+_FIRST_PERSON = ("i", "i'm", "i'd", "i've", "me", "my", "we", "we'd", "we're")
+
 # Size words, for the misstated_factor check. A word from the wrong list near a
-# field whose value is above (or below) typical is a misdescription.
+# field whose value is higher (or lower) than most customers' is a
+# misdescription.
 _LOW_WORDS = frozenset({
     "low", "lower", "lowest", "small", "smaller", "little", "short", "shorter",
     "few", "fewer", "minimal", "modest", "cheap", "cheaper",
@@ -347,24 +380,26 @@ def risk_level(probability: float, threshold: float) -> str:
 
 
 def compare_to_typical(value: float, median: float, spread: float) -> str:
-    """Where a value sits against the training median, in words.
+    """Where a value sits against the training median, in plain words.
 
     Distance measured in training standard deviations: within a quarter is
-    "about typical", past one is "well above/below". Words only, so there is
-    no number here for the model to quote.
+    "similar to most customers", past one is "much higher/lower". Words only,
+    so there is no number here for the model to quote. Phrased as something a
+    manager would say, because the model copies it: v2's "well above typical"
+    turned up verbatim in 6 of 8 live summaries.
     """
     if spread <= 0:
-        return "about typical"
+        return "similar to most customers"
     z = (value - median) / spread
     if z >= 1:
-        return "well above typical"
+        return "much higher than most customers"
     if z >= 0.25:
-        return "above typical"
+        return "higher than most customers"
     if z <= -1:
-        return "well below typical"
+        return "much lower than most customers"
     if z <= -0.25:
-        return "below typical"
-    return "about typical"
+        return "lower than most customers"
+    return "similar to most customers"
 
 
 def _factor(driver: dict, reference: dict) -> dict:
@@ -381,7 +416,7 @@ def _factor(driver: dict, reference: dict) -> dict:
     if field not in _UNQUOTED_VALUE_FIELDS:
         factor["value"] = round(value, 2) if isinstance(value, float) else value
     if numeric and field in reference:
-        factor["compared_to_typical"] = compare_to_typical(
+        factor["vs_other_customers"] = compare_to_typical(
             value, reference[field]["median"], reference[field]["spread"],
         )
     return factor
@@ -429,10 +464,29 @@ def narration_payload(explanation: dict, top_n: int = NARRATION_TOP_N) -> dict:
     }
 
 
-# Keys of the payload that are sent to the model. target_for_retention repeats
-# `decision`; protected_drivers_omitted would reintroduce exactly what
-# filtering removed.
-_SENT_KEYS = ("risk_level", "decision", "factors")
+# Keys of the payload that are sent to the model. The decision is not sent
+# (since v3): the risk band already agrees with it by construction, and a model
+# handed a decision comments on it. protected_drivers_omitted would
+# reintroduce exactly what filtering removed.
+_SENT_KEYS = ("risk_level", "factors")
+
+# What each prompt version was actually sent, so a saved result can be traced
+# or replayed with its own messages rather than today's. v2 still received
+# the decision. v1 results predate saved payloads and aren't replayable.
+SENT_KEYS_BY_PROMPT = {
+    "explanation_v2": ("risk_level", "decision", "factors"),
+    PROMPT_VERSION: _SENT_KEYS,
+}
+
+
+def sent_payload(payload: dict, prompt_version: str = PROMPT_VERSION) -> dict:
+    """The part of a payload a given prompt version sent to the model."""
+    if prompt_version not in SENT_KEYS_BY_PROMPT:
+        raise ValueError(
+            f"Don't know what {prompt_version} was sent; known versions: "
+            f"{sorted(SENT_KEYS_BY_PROMPT)}."
+        )
+    return {key: payload[key] for key in SENT_KEYS_BY_PROMPT[prompt_version]}
 
 
 def load_prompt() -> str:
@@ -443,7 +497,7 @@ def load_prompt() -> str:
 
 def build_messages(payload: dict) -> list[dict]:
     """The system turn plus one user turn rendering the payload as JSON."""
-    sendable = {key: payload[key] for key in _SENT_KEYS}
+    sendable = sent_payload(payload)
     return [
         {"role": "system", "content": load_prompt()},
         {"role": "user", "content": json.dumps(sendable, indent=2)},
@@ -498,6 +552,12 @@ def risk_claims(text: str) -> set[str]:
     """{"low", "high"}: which levels of risk the text claims."""
     pairs = [(p, "low") for p in _LOW_RISK_PHRASES] + [(p, "high") for p in _HIGH_RISK_PHRASES]
     return {label for _, _, label in _phrase_spans(text, pairs)}
+
+
+def commentary_in(text: str) -> list[str]:
+    """Phrases that comment on the decision or speak in the first person."""
+    pairs = [(p, p) for p in _COMMENTARY_PHRASES] + [(p, p) for p in _FIRST_PERSON]
+    return [label for _, _, label in _phrase_spans(text, pairs)]
 
 
 def size_words_near(text: str, start: int, end: int) -> set[str]:
@@ -674,6 +734,13 @@ def validate_narrative(
             f"decided to {payload['decision']}"
         )
 
+    commentary = commentary_in(summary)
+    if commentary:
+        return None, "commentary", (
+            f"summary says {', '.join(repr(c) for c in commentary)}; it should "
+            f"explain why, not comment on the decision or speak as itself"
+        )
+
     for reason in parsed["reasons"]:
         expected = factors[reason["field"]]["direction"]
         if reason["direction"] != expected:
@@ -682,10 +749,10 @@ def validate_narrative(
                 f"says it {expected}"
             )
     for start, end, field in _phrase_spans(summary, _ALIAS_PAIRS):
-        comparison = factors.get(field, {}).get("compared_to_typical", "")
-        if "above" in comparison:
+        comparison = factors.get(field, {}).get("vs_other_customers", "")
+        if "higher" in comparison:
             wrong = size_words_near(summary, start, end) & _LOW_WORDS
-        elif "below" in comparison:
+        elif "lower" in comparison:
             wrong = size_words_near(summary, start, end) & _HIGH_WORDS
         else:
             continue
@@ -725,7 +792,11 @@ def _correction(rejection_type: str, detail: str) -> str:
             "allowed are factor values."
         ),
         "decision_contradiction": (
-            "That contradicted the risk level or decision you were given."
+            "That contradicted the risk level you were given."
+        ),
+        "commentary": (
+            "That commented on the decision or spoke in the first person. "
+            "Explain only why this customer has this risk level."
         ),
         "misstated_factor": (
             "That described a factor's direction or size differently from "
@@ -822,6 +893,8 @@ def narrate(
     temperature: float = DEFAULT_TEMPERATURE,
     max_attempts: int = MAX_ATTEMPTS,
     top_n: int = NARRATION_TOP_N,
+    tracer=None,
+    trace_label: str | None = None,
 ) -> dict:
     """Add a validated explanation to an attribution.
 
@@ -834,61 +907,91 @@ def narrate(
 
     Attempt records are never merged. A failing API call raises rather than
     being recorded as a rejection: it is not a verdict on the text.
+
+    `tracer` (from llm_tracing.from_env()) sends the call to Langfuse; the
+    default records nothing. Tracing never changes the result -- a tracer that
+    fails only warns. `trace_label` names the customer in the trace.
     """
     payload = narration_payload(explanation, top_n=top_n)
     messages = build_messages(payload)
     client = client if client is not None else OpenAIClient()
+    tracer = tracer if tracer is not None else llm_tracing.NoopTracer()
+    sent = json.loads(messages[1]["content"])
 
     attempts: list[dict] = []
     structured: dict | None = None
 
-    for attempt in range(1, max_attempts + 1):
-        started = time.perf_counter()
-        completion = client.complete(
-            messages, model=model, temperature=temperature,
-            max_tokens=MAX_OUTPUT_TOKENS, response_format=RESPONSE_FORMAT,
-        )
-        latency_ms = (time.perf_counter() - started) * 1000.0
+    with tracer.trace(
+        name="narrate",
+        input=sent,
+        tags=[PROMPT_VERSION, model],
+        metadata={"customer": trace_label, "risk_level": payload["risk_level"],
+                  "decision": payload["decision"]},
+    ) as trace:
+        for attempt in range(1, max_attempts + 1):
+            with trace.generation(
+                name=f"attempt {attempt}",
+                model=model,
+                input=messages,
+                model_parameters={"temperature": temperature, "max_tokens": MAX_OUTPUT_TOKENS},
+            ) as generation:
+                started = time.perf_counter()
+                completion = client.complete(
+                    messages, model=model, temperature=temperature,
+                    max_tokens=MAX_OUTPUT_TOKENS, response_format=RESPONSE_FORMAT,
+                )
+                latency_ms = (time.perf_counter() - started) * 1000.0
 
-        text = completion.text or ""
-        parsed, rejection_type, detail = validate_narrative(text, payload)
+                text = completion.text or ""
+                parsed, rejection_type, detail = validate_narrative(text, payload)
 
-        attempts.append({
-            "attempt": attempt,
-            "accepted": parsed is not None,
-            "rejection_type": rejection_type,
-            "rejection_detail": detail,
-            "text": text,
-            "latency_ms": round(latency_ms, 1),
-            "prompt_tokens": completion.prompt_tokens,
-            "completion_tokens": completion.completion_tokens,
-            "finish_reason": getattr(completion, "finish_reason", None),
-        })
+                record = {
+                    "attempt": attempt,
+                    "accepted": parsed is not None,
+                    "rejection_type": rejection_type,
+                    "rejection_detail": detail,
+                    "text": text,
+                    "latency_ms": round(latency_ms, 1),
+                    "prompt_tokens": completion.prompt_tokens,
+                    "completion_tokens": completion.completion_tokens,
+                    "finish_reason": getattr(completion, "finish_reason", None),
+                }
+                attempts.append(record)
+                generation.update(
+                    output=text,
+                    usage={"input": record["prompt_tokens"], "output": record["completion_tokens"]},
+                    metadata=llm_tracing.attempt_metadata(record),
+                    level=None if record["accepted"] else "WARNING",
+                )
+            llm_tracing.score_attempt(generation, record)
 
-        if parsed is not None:
-            structured = parsed
-            break
+            if parsed is not None:
+                structured = parsed
+                break
 
-        if attempt < max_attempts:
-            messages = messages + [
-                {"role": "assistant", "content": text},
-                {"role": "user", "content": _correction(rejection_type, detail)},
-            ]
+            if attempt < max_attempts:
+                messages = messages + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": _correction(rejection_type, detail)},
+                ]
 
-    return {
-        **explanation,
-        "narrative": structured["summary"] if structured else None,
-        "structured": structured,
-        "narrative_available": structured is not None,
-        "payload": payload,
-        "prompt_version": PROMPT_VERSION,
-        "model": model,
-        "protected_drivers_omitted": payload["protected_drivers_omitted"],
-        "attempts": attempts,
-        "final_rejection_type": (
-            None if structured is not None else attempts[-1]["rejection_type"]
-        ),
-    }
+        result = {
+            **explanation,
+            "narrative": structured["summary"] if structured else None,
+            "structured": structured,
+            "narrative_available": structured is not None,
+            "payload": payload,
+            "prompt_version": PROMPT_VERSION,
+            "model": model,
+            "protected_drivers_omitted": payload["protected_drivers_omitted"],
+            "attempts": attempts,
+            "final_rejection_type": (
+                None if structured is not None else attempts[-1]["rejection_type"]
+            ),
+        }
+        trace.finish(output=llm_tracing.trace_output(result))
+        llm_tracing.score_result(trace, result)
+    return result
 
 
 def narrate_customer(
@@ -1071,12 +1174,17 @@ def main(argv=None) -> int:
         print(f"{error}", file=sys.stderr)
         return 2
 
+    tracer = llm_tracing.from_env(session_id=llm_tracing.session_id("cli"))
+    if tracer.enabled:
+        print(f"Tracing to Langfuse, session '{tracer.session_id}'.", file=sys.stderr)
+
     results, failures = [], []
     for name, customer in customers:
         explanation = explain.explain_customer(customer, model=pipeline, top_n=None)
         try:
             result = narrate(
                 explanation, client=client, model=args.model, top_n=args.top,
+                tracer=tracer, trace_label=name,
             )
         except Exception as error:  # noqa: BLE001 -- one bad call must not
             # discard the calls already paid for. The library lets this
@@ -1090,6 +1198,7 @@ def main(argv=None) -> int:
     if args.rates and results:
         print("\n".join(render_rates(rejection_rates(results))))
 
+    tracer.flush()
     for name, error in failures:
         print(f"FAILED {name}: {error}", file=sys.stderr)
     return 1 if failures and not results else 0

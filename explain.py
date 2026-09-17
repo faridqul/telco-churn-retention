@@ -122,7 +122,11 @@ FIELD_LABELS: dict[str, str] = {
     "total_services": "number of add-on services taken",
     "is_auto_pay": "pays automatically",
     "family_tie": "has a partner or dependents",
-    "contractvstenure": "contract length weighted by tenure",
+    # A product, not a ratio: contract rank (1 month-to-month, 2 one year,
+    # 3 two year) times months as a customer. Labelled "contract length
+    # weighted by tenure" until 2026-09-17, which the language model read as
+    # "contract length compared to tenure" in 4 of 8 live outputs.
+    "contractvstenure": "overall commitment (contract term × months as a customer)",
     "average_monthly_charges": "average monthly bill across their whole tenure",
     "charge_change_ratio": "current bill vs. their historical average",
 }

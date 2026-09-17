@@ -47,15 +47,16 @@ from tests.conftest import FakeLLM
 # The prompt this suite was written against. Pinned so that editing the
 # wording without bumping PROMPT_VERSION fails here: every rejection rate ever
 # recorded is a measurement OF a specific prompt.
-PROMPT_SHA256 = "b1f98f68c418440b559d5e23f3e24b47adfb4ba0256cf81f26464d4d678c595d"
+PROMPT_SHA256 = "65b5fb869bdd43b41a425daa18045edddcb8cc188d499cbc088541915f47e168"
 
-# v1, kept unused because CHANGELOG.md's stage-1 live results measure it.
+# Earlier versions, kept unused because live results measure them: v1 in
+# CHANGELOG.md, v2 in CHANGELOG.md and outputs/stage1_v2.json.
 PROMPT_V1_SHA256 = "00d47880a6d95a9792b3c89bc89725d46cd14d3b6b19467290f149763cdd941f"
+PROMPT_V2_SHA256 = "b1f98f68c418440b559d5e23f3e24b47adfb4ba0256cf81f26464d4d678c595d"
 
 GOOD_SUMMARY = (
     "This customer is on a month-to-month contract and has been with us only "
-    "a short time, so there is little holding them. Worth an early retention "
-    "call."
+    "a short time, so there is little holding them."
 )
 
 
@@ -230,17 +231,21 @@ def test_messages_carry_no_probability_weight_or_protected_field(payload):
     rendered = narrate.build_messages(payload)[1]["content"]
     for forbidden in ("0.57", "churn_risk", "0.5953", "weight",
                       "protected_drivers_omitted", "seniorcitizen",
-                      "target_for_retention"):
+                      "target_for_retention", "decision", "target for retention"):
         assert forbidden not in rendered, forbidden
 
 
 def test_the_user_turn_is_the_sent_part_of_the_payload(payload):
     sent = json.loads(narrate.build_messages(payload)[1]["content"])
-    assert sent == {
-        "risk_level": "high",
-        "decision": "target for retention",
-        "factors": payload["factors"],
-    }
+    assert sent == {"risk_level": "high", "factors": payload["factors"]}
+
+
+def test_the_decision_is_kept_in_the_payload_but_not_sent(payload):
+    """Since v3. The band already agrees with the decision by construction,
+    and v2, which was sent the decision, commented on it in 7 of 8 live
+    outputs. The payload keeps it for the guards and for reviewers."""
+    assert payload["decision"] == "target for retention"
+    assert "decision" not in json.loads(narrate.build_messages(payload)[1]["content"])
 
 
 def test_payload_states_the_decision_both_ways():
@@ -266,8 +271,9 @@ def test_a_band_can_never_disagree_with_the_decision(threshold):
 
 
 @pytest.mark.parametrize("value, expected", [
-    (29, "about typical"), (35, "about typical"), (40, "above typical"),
-    (60, "well above typical"), (20, "below typical"), (1, "well below typical"),
+    (29, "similar to most customers"), (35, "similar to most customers"),
+    (40, "higher than most customers"), (60, "much higher than most customers"),
+    (20, "lower than most customers"), (1, "much lower than most customers"),
 ])
 def test_compare_to_typical_uses_training_spreads(value, expected):
     """tenure: median 29, spread 24.5 -- a quarter spread is ~6 months."""
@@ -275,16 +281,16 @@ def test_compare_to_typical_uses_training_spreads(value, expected):
 
 
 def test_compare_to_typical_survives_a_zero_spread():
-    assert narrate.compare_to_typical(5, 5, 0) == "about typical"
+    assert narrate.compare_to_typical(5, 5, 0) == "similar to most customers"
 
 
-def test_row_7s_total_charged_is_described_as_well_above_typical():
+def test_row_7s_total_charged_is_described_as_much_higher_than_most():
     """The stage-1 regression. The model called $5,762.95 "lower" because it
     had nothing to compare it with; now the comparison is in the payload."""
     factors = {f["field"]: f for f in payload_for(ROW_7_DRIVERS, 0.05)["factors"]}
     assert factors["totalcharges"]["value"] == 5762.95
-    assert factors["totalcharges"]["compared_to_typical"] == "well above typical"
-    assert factors["tenure"]["compared_to_typical"] == "well above typical"
+    assert factors["totalcharges"]["vs_other_customers"] == "much higher than most customers"
+    assert factors["tenure"]["vs_other_customers"] == "much higher than most customers"
 
 
 def test_categorical_factors_get_no_comparison(payload):
@@ -296,16 +302,16 @@ def test_categorical_factors_get_no_comparison(payload):
 
 
 def test_a_yes_no_flag_is_sent_as_words_without_a_comparison():
-    """A median of 0 would make every autopay customer "well above typical"."""
+    """A median of 0 would make every autopay customer "much higher than most"."""
     factor = payload_for([("is_auto_pay", 1, -0.3)])["factors"][0]
     assert factor["value"] == "yes"
-    assert "compared_to_typical" not in factor
+    assert "vs_other_customers" not in factor
 
 
 def test_a_meaningless_engineered_value_is_compared_but_not_sent():
     factor = payload_for([("contractvstenure", 136, -0.3)])["factors"][0]
     assert "value" not in factor
-    assert factor["compared_to_typical"] == "well above typical"
+    assert factor["vs_other_customers"] == "much higher than most customers"
 
 
 def test_float_values_are_rounded_for_the_model():
@@ -325,7 +331,7 @@ def test_the_real_dummy_customer_payload():
     assert payload["protected_drivers_omitted"] == []
     by_field = {f["field"]: f for f in payload["factors"]}
     assert list(by_field) == ["contract", "contractvstenure", "tenure"]
-    assert by_field["tenure"]["compared_to_typical"] == "well below typical"
+    assert by_field["tenure"]["vs_other_customers"] == "much lower than most customers"
 
 
 # ==========================================================================
@@ -355,10 +361,13 @@ def test_prompt_text_is_pinned():
     )
 
 
-def test_the_v1_prompt_is_kept_unchanged():
-    """Stage 1's live results in CHANGELOG.md are a measurement of this file."""
-    v1 = narrate.REPO_ROOT / "prompts" / "explanation_v1.txt"
-    assert hashlib.sha256(v1.read_bytes()).hexdigest() == PROMPT_V1_SHA256
+@pytest.mark.parametrize("version, sha", [
+    ("explanation_v1", PROMPT_V1_SHA256), ("explanation_v2", PROMPT_V2_SHA256),
+])
+def test_earlier_prompts_are_kept_unchanged(version, sha):
+    """Live results in CHANGELOG.md and outputs/ are measurements of these."""
+    path = narrate.REPO_ROOT / "prompts" / f"{version}.txt"
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == sha
 
 
 def test_messages_are_a_system_turn_then_a_user_turn(payload):
@@ -369,7 +378,7 @@ def test_messages_are_a_system_turn_then_a_user_turn(payload):
 
 def test_the_prompt_version_travels_with_every_result(explanation):
     result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
-    assert result["prompt_version"] == "explanation_v2"
+    assert result["prompt_version"] == "explanation_v3"
 
 
 def test_the_request_asks_for_strict_json_and_caps_output_tokens(explanation):
@@ -441,6 +450,20 @@ def test_an_alias_does_not_match_inside_a_longer_word():
 
 def test_unrelated_prose_names_no_fields():
     assert narrate.fields_mentioned("Worth an early call from the team.") == set()
+
+
+def test_the_commitment_label_says_it_is_a_product():
+    """v2's label, "contract length weighted by tenure", was retold live as
+    "contract length compared to tenure" in 4 of 8 outputs. The feature is
+    contract rank times months, and the label now says so."""
+    label = explain.FIELD_LABELS["contractvstenure"]
+    assert "×" in label and "commitment" in label
+
+
+def test_commitment_phrases_name_the_engineered_feature_not_the_contract():
+    assert narrate.fields_mentioned("their overall commitment is low") == {"contractvstenure"}
+    assert narrate.fields_mentioned("their commitment so far is low") == {"contractvstenure"}
+    assert narrate.fields_mentioned("they have no commitment") == {"contract"}
 
 
 def test_a_single_month_is_not_a_marital_status():
@@ -644,6 +667,36 @@ def test_low_risk_language_is_fine_for_a_customer_left_alone(summary):
     assert verdict(output, payload) is None
 
 
+@pytest.mark.parametrize("summary, said", [
+    # Verbatim endings from v2's live run (outputs/stage1_v2.json).
+    ("They are on a month-to-month contract. Therefore, I agree with the decision to not target them.", "i"),
+    ("They are on a month-to-month contract. Therefore, the decision to not target them is appropriate.", "decision"),
+    ("They are on a month-to-month contract. Targeting them for retention is a suitable decision.", "suitable"),
+    ("We should reach out, given their month-to-month contract.", "we"),
+])
+def test_commentary_on_the_decision_is_rejected(summary, said, payload):
+    _, rejection_type, detail = narrate.validate_narrative(reply(summary=summary), payload)
+    assert rejection_type == "commentary"
+    assert repr(said) in detail
+
+
+@pytest.mark.parametrize("summary", [
+    "They have been with us only a short time on a month-to-month contract.",
+    "This customer has had a month-to-month contract for a single month.",
+    "Their month-to-month contract gives them little reason to stay.",
+])
+def test_explaining_why_is_not_commentary(summary, payload):
+    """The other direction: "with us", "stay" and pronoun-like fragments
+    inside words must not trip the check."""
+    assert verdict(reply(summary=summary), payload) is None
+
+
+def test_a_contradiction_is_reported_before_commentary(payload):
+    """A flagged customer called unlikely to churn is the worse failure."""
+    output = reply(summary="This month-to-month customer is unlikely to churn, so I agree.")
+    assert verdict(output, payload) == "decision_contradiction"
+
+
 def test_rejects_a_reason_whose_direction_is_wrong(payload):
     output = reply(reasons=(("contract", "lowers risk"),))
     _, rejection_type, detail = narrate.validate_narrative(output, payload)
@@ -718,6 +771,7 @@ def test_every_rejection_type_is_reachable_and_from_the_closed_set(payload):
         reply(summary="Their monthly bill is high."),
         reply(summary="Their contract adds 0.5953."),
         reply(summary="This month-to-month customer is unlikely to churn."),
+        reply(summary="Their month-to-month contract makes a retention call worthwhile."),
         reply(reasons=(("contract", "lowers risk"),)),
     ]
     produced = {verdict(output, payload) for output in bad}
@@ -1012,7 +1066,7 @@ def test_render_includes_the_structured_output(explanation):
     assert "risk level: high" in text
     assert "- contract (raises risk)" in text
     assert "month-to-month contract" in text
-    assert "explanation_v2" in text
+    assert "explanation_v3" in text
 
 
 def test_render_reports_a_missing_narrative_with_its_reason(explanation):
