@@ -6010,3 +6010,23 @@ branch is one commit ahead of `main` and merges with a fast-forward.
 key material; `.env` and `outputs/` are gitignored and absent from it.
 **Committed** (amended into `7510a03` so this entry travels with the work it
 describes). Not pushed.
+
+## 2026-09-19 — Correction: the commit hash in the entry above
+
+**Files touched:** `CHANGELOG.md` (this entry).
+
+**What changed:** The entry above names the commit as `7510a03`. That was the
+hash before the entry itself was amended into it, which rewrote it. The
+correct hash is **`ff77fb1`** on `chore/llm-guards-styles-cleanup`. Everything
+else in that entry holds.
+
+**Why:** Entries are never edited, so a wrong hash is corrected by a new
+entry. Amending a commit to add an entry that names the commit cannot
+self-describe; this one is a separate commit, so its own hash is not at
+stake.
+
+**Requested or incidental:** Incidental: a correction to the record.
+
+**Verification status:** `git log` shows `ff77fb1` as the single commit ahead
+of `main`. Documentation only. **Committed** as a second commit on the same
+branch. Not pushed.
