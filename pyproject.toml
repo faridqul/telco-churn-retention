@@ -67,6 +67,24 @@ markers = [
 ]
 addopts = "-m 'not live'"
 
+[tool.pyright]
+# Used by the pyright-lsp plugin (and `pyright .` on the command line). Not a
+# gate: nothing in CI or the Dockerfile runs it, and the type checker has no
+# say over what ships. It exists so an editor can flag a name that no longer
+# exists -- the failure mode when a function is deleted by hand.
+#
+# venvPath/venv point it at the project environment. Without them every
+# third-party import reads as missing (41 of them), which buries anything
+# real. `uv sync` must have been run.
+venvPath = "."
+venv = ".venv"
+exclude = [".venv", "**/__pycache__", "outputs", "frontend"]
+# basic, not the default standard: pandas is the noise source here. A pandas
+# value's type is a union of a dozen classes, so ordinary calls like
+# `value.isna()` are reported as errors on each member of the union. Those
+# are not defects -- see the memory note about pyright noise in this repo.
+typeCheckingMode = "basic"
+
 [build-system]
 requires = ["uv_build>=0.12.3,<0.13.0"]
 build-backend = "uv_build"

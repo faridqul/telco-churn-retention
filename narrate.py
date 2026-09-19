@@ -64,6 +64,33 @@ customers"), the decision is no longer sent and commenting on it is rejected
 as `commentary`, and the feature's label now says what it is. Engineered
 features stay in the top three; they are often genuinely strong drivers.
 
+AFTER v3'S LIVE RUN (the prompt stays v3)
+v3's live run passed 8 of 8 and found one guard false positive: the bare alias
+"commitment" rejected "month-to-month offers less commitment" as an unlisted
+field. The bare alias is gone. Requests now carry a fixed seed: temperature 0
+alone gave DUMMY_CUSTOMER two different texts in that run.
+
+The run's other two findings are NOT guarded, deliberately: an overstated
+degree ("much lower overall commitment" when the payload said "lower") and a
+hedged guess at a motive ("may indicate ..."). Neither states a false fact,
+and v3's prompt doesn't ask the model to avoid them, so a guard would only
+cause retries. Guards for both were built and then removed on 2026-09-17;
+the plan is to state both rules in the next prompt version instead.
+
+A prompt v4 stating both rules, with a 40-word summary, was written, measured
+live once and then deleted on 2026-09-19 -- v3 was a day old and hadn't been
+judged yet, and an unused prompt is one more thing to keep in step. Its three
+rules and its measured results are in CHANGELOG.md, and the next prompt is
+v5.
+
+EXPLANATION STYLES
+One accepted reply can be shown as `short` (the summary), `bullets` (one line
+per reason, built from the payload's own values and comparisons, so every
+word in it is checked data rather than model prose) or `detailed` (both).
+format_explanation() renders these from the structured output: a style is a
+view, never another API call, so switching styles costs nothing and needs no
+re-measurement.
+
 RETRY POLICY
 One retry, two attempts maximum. Both attempts are recorded separately and are
 never merged: each keeps its own text, its own verdict and its own rejection
@@ -114,6 +141,13 @@ DEFAULT_MODEL = "gpt-4o-mini"
 # Zero, so the same customer yields the same output. Needed for caching, and
 # so that step four's harness measures the prompt rather than sampling noise.
 DEFAULT_TEMPERATURE = 0.0
+
+# Temperature 0 is not enough on its own: the v3 live run got two different
+# summaries for DUMMY_CUSTOMER from two identical requests. OpenAI documents
+# `seed` as best-effort determinism, so this narrows the variation rather than
+# guaranteeing none; system_fingerprint is recorded per attempt so a changed
+# backend can be told apart from sampling noise.
+DEFAULT_SEED = 42
 
 # Two attempts: the first, and one retry. Pinned by test against a literal.
 MAX_ATTEMPTS = 2
@@ -257,7 +291,10 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "no commitment", "rolling plan",
     ),
     "contractvstenure": (
-        "overall commitment", "commitment level", "commitment",
+        # Not bare "commitment": "a month-to-month contract offers less
+        # commitment" is about the contract, and v3's live run rejected it as
+        # naming this field.
+        "overall commitment", "commitment level",
         "contract length weighted by tenure", "contract weighted",
     ),
     # Services.
@@ -819,6 +856,10 @@ class Completion:
     # "stop" normally; "length" when MAX_OUTPUT_TOKENS cut the reply off,
     # which is the first thing to check when malformed_output appears.
     finish_reason: str | None = None
+    # Identifies the backend configuration that served the request. Two
+    # different texts under one fingerprint and one seed are sampling noise;
+    # under two fingerprints, the backend changed.
+    system_fingerprint: str | None = None
 
 
 class LLMClient(Protocol):
@@ -826,7 +867,7 @@ class LLMClient(Protocol):
 
     def complete(
         self, messages, *, model: str, temperature: float,
-        max_tokens: int, response_format: dict,
+        max_tokens: int, response_format: dict, seed: int | None = None,
     ) -> Completion:
         ...
 
@@ -863,14 +904,16 @@ class OpenAIClient:
 
     def complete(
         self, messages, *, model: str, temperature: float,
-        max_tokens: int, response_format: dict,
+        max_tokens: int, response_format: dict, seed: int | None = None,
     ) -> Completion:
+        kwargs = {"seed": seed} if seed is not None else {}
         response = self._client.chat.completions.create(
             model=model,
             messages=messages,
             temperature=temperature,
             max_completion_tokens=max_tokens,
             response_format=response_format,
+            **kwargs,
         )
         usage = getattr(response, "usage", None)
         choice = response.choices[0]
@@ -879,6 +922,7 @@ class OpenAIClient:
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
             finish_reason=getattr(choice, "finish_reason", None),
+            system_fingerprint=getattr(response, "system_fingerprint", None),
         )
 
 
@@ -891,6 +935,7 @@ def narrate(
     client: LLMClient | None = None,
     model: str = DEFAULT_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
+    seed: int | None = DEFAULT_SEED,
     max_attempts: int = MAX_ATTEMPTS,
     top_n: int = NARRATION_TOP_N,
     tracer=None,
@@ -933,12 +978,14 @@ def narrate(
                 name=f"attempt {attempt}",
                 model=model,
                 input=messages,
-                model_parameters={"temperature": temperature, "max_tokens": MAX_OUTPUT_TOKENS},
+                model_parameters={"temperature": temperature, "max_tokens": MAX_OUTPUT_TOKENS,
+                                  "seed": seed},
             ) as generation:
                 started = time.perf_counter()
                 completion = client.complete(
                     messages, model=model, temperature=temperature,
                     max_tokens=MAX_OUTPUT_TOKENS, response_format=RESPONSE_FORMAT,
+                    seed=seed,
                 )
                 latency_ms = (time.perf_counter() - started) * 1000.0
 
@@ -955,6 +1002,7 @@ def narrate(
                     "prompt_tokens": completion.prompt_tokens,
                     "completion_tokens": completion.completion_tokens,
                     "finish_reason": getattr(completion, "finish_reason", None),
+                    "system_fingerprint": getattr(completion, "system_fingerprint", None),
                 }
                 attempts.append(record)
                 generation.update(
@@ -983,6 +1031,7 @@ def narrate(
             "payload": payload,
             "prompt_version": PROMPT_VERSION,
             "model": model,
+            "seed": seed,
             "protected_drivers_omitted": payload["protected_drivers_omitted"],
             "attempts": attempts,
             "final_rejection_type": (
@@ -1089,6 +1138,53 @@ def render(result: dict, title: str) -> list[str]:
     return lines
 
 
+EXPLANATION_STYLES = ("short", "bullets", "detailed")
+
+
+def _reason_line(factor: dict) -> str:
+    """One bullet, from the payload alone: name, value, comparison, direction."""
+    parts = [factor["name"]]
+    if "value" in factor:
+        parts[0] += f": {factor['value']}"
+    if "vs_other_customers" in factor:
+        parts.append(factor["vs_other_customers"])
+    return f"{', '.join(parts)} ({factor['direction']})"
+
+
+def format_explanation(result: dict, style: str = "short") -> str:
+    """An accepted narration as text a reader sees, in one of three styles.
+
+      short    -- the model's summary, as accepted.
+      bullets  -- the risk level, then one line per reason the model gave,
+                  worded from the payload rather than by the model.
+      detailed -- the summary followed by the bullets.
+
+    A view over one accepted reply, not a prompt variant: no extra call, and
+    nothing new to validate, because every bullet is payload data selected by
+    reasons that already passed the guards. A result with no narrative
+    returns the payload's own factors as bullets, so a reader still gets the
+    reasons -- the degraded answer narrate() promises.
+    """
+    if style not in EXPLANATION_STYLES:
+        raise ValueError(f"style {style!r} is not one of {list(EXPLANATION_STYLES)}")
+    payload = result["payload"]
+    factors = {factor["field"]: factor for factor in payload["factors"]}
+    structured = result["structured"]
+    if structured is None:
+        lines = [f"Risk level: {payload['risk_level']} (no written summary)"]
+        lines += [f"- {_reason_line(f)}" for f in payload["factors"]]
+        return "\n".join(lines)
+    if style == "short":
+        return structured["summary"]
+    bullets = [f"Risk level: {structured['risk_level']}"] + [
+        f"- {_reason_line(factors[reason['field']])}"
+        for reason in structured["reasons"]
+    ]
+    if style == "bullets":
+        return "\n".join(bullets)
+    return "\n".join([structured["summary"], ""] + bullets)
+
+
 def _wrap(text: str, width: int) -> list[str]:
     words, lines, current = text.split(), [], ""
     for word in words:
@@ -1157,6 +1253,8 @@ def main(argv=None) -> int:
     parser.add_argument("--top", type=int, default=NARRATION_TOP_N,
                         help=f"factors shown to the model (default {NARRATION_TOP_N})")
     parser.add_argument("--model", default=DEFAULT_MODEL, help=f"default {DEFAULT_MODEL}")
+    parser.add_argument("--style", choices=EXPLANATION_STYLES,
+                        help="print only the explanation, in this style, instead of the full report")
     parser.add_argument("--rates", action="store_true",
                         help="print the three rejection rates for the batch")
     parser.add_argument("--quiet", action="store_true",
@@ -1192,7 +1290,9 @@ def main(argv=None) -> int:
             failures.append((name, f"{type(error).__name__}: {error}"))
             continue
         results.append(result)
-        if not args.quiet:
+        if args.style:
+            print(f"--- {name}\n{format_explanation(result, args.style)}\n")
+        elif not args.quiet:
             print("\n".join(render(result, f"EXPLANATION -- {name}")))
 
     if args.rates and results:

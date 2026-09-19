@@ -462,8 +462,25 @@ def test_the_commitment_label_says_it_is_a_product():
 
 def test_commitment_phrases_name_the_engineered_feature_not_the_contract():
     assert narrate.fields_mentioned("their overall commitment is low") == {"contractvstenure"}
-    assert narrate.fields_mentioned("their commitment so far is low") == {"contractvstenure"}
+    assert narrate.fields_mentioned("their commitment level is low") == {"contractvstenure"}
     assert narrate.fields_mentioned("they have no commitment") == {"contract"}
+
+
+def test_bare_commitment_names_no_field():
+    """v3 live false positive: "commitment" alone mapped to contractvstenure,
+    so a sentence about the contract was rejected as naming an unlisted
+    factor."""
+    assert narrate.fields_mentioned("which offers less commitment") == set()
+
+
+def test_less_commitment_from_a_contract_is_accepted():
+    """The v3 live reply's own wording, for a payload without contractvstenure."""
+    payload = payload_for([("contract", "Month-to-month", 0.6), ("tenure", 1, 0.4)])
+    output = reply(
+        summary="This customer is on a month-to-month contract, which offers less "
+                "commitment, and has been a customer for 1 month.",
+    )
+    assert verdict(output, payload) is None
 
 
 def test_a_single_month_is_not_a_marital_status():
@@ -760,6 +777,43 @@ def test_an_about_typical_value_is_not_size_checked():
     assert verdict(output, payload) is None
 
 
+# Customer row 5 of simulated_new_customers.csv as v3's live run saw it:
+# overall commitment "lower than most customers", tenure "much lower".
+ROW_5_DRIVERS = [
+    ("contract", "Month-to-month", 0.5),
+    ("contractvstenure", 1, 0.3),
+    ("tenure", 1, 0.2),
+]
+ROW_5_REASONS = (
+    ("contract", "raises risk"), ("contractvstenure", "raises risk"),
+    ("tenure", "raises risk"),
+)
+
+
+def test_an_overstated_degree_is_not_rejected():
+    """v3's live row 5 said "much lower" for a commitment that is only
+    "lower". Deliberately allowed: the direction and size are right, and v3's
+    prompt doesn't ask for more. A degree guard was built and removed on
+    2026-09-17; the rule is meant for the next prompt version instead."""
+    payload = payload_for(ROW_5_DRIVERS, probability=0.3)
+    assert payload["factors"][1]["vs_other_customers"] == "lower than most customers"
+    output = reply(
+        summary="This customer is on a month-to-month contract. Additionally, they "
+                "have a much lower overall commitment and have only been a customer "
+                "for 1 month.",
+        risk_level="moderate", reasons=ROW_5_REASONS,
+    )
+    assert verdict(output, payload) is None
+
+
+def test_a_hedged_guess_is_not_rejected(payload):
+    """No speculation guard, for the same reason: v3's prompt doesn't forbid
+    it. Pinned so re-adding one is a decision, not an accident."""
+    output = reply(summary="Their month-to-month contract may indicate they are "
+                           "shopping around.")
+    assert verdict(output, payload) is None
+
+
 def test_every_rejection_type_is_reachable_and_from_the_closed_set(payload):
     """Step four buckets by these. Each type must be producible, or a bucket
     is dead code; and nothing outside the set may be produced."""
@@ -874,6 +928,20 @@ def test_temperature_is_zero_by_default(explanation):
     client = FakeLLM([GOOD])
     narrate.narrate(explanation, client=client)
     assert client.calls[0]["temperature"] == 0.0
+
+
+def test_a_fixed_seed_is_sent_and_recorded(explanation):
+    """temperature=0 alone gave two texts for one customer in v3's live run."""
+    client = FakeLLM([GOOD])
+    result = narrate.narrate(explanation, client=client)
+    assert client.calls[0]["seed"] == 42
+    assert result["seed"] == 42
+
+
+def test_the_seed_can_be_turned_off(explanation):
+    client = FakeLLM([GOOD])
+    narrate.narrate(explanation, client=client, seed=None)
+    assert client.calls[0]["seed"] is None
 
 
 def test_the_default_model_is_recorded_in_the_result(explanation):
@@ -1040,6 +1108,7 @@ def test_the_real_client_sends_the_schema_and_the_token_cap():
             class Response:
                 choices = [Choice]
                 usage = Usage
+                system_fingerprint = "fp_test"
 
             return Response
 
@@ -1047,10 +1116,18 @@ def test_the_real_client_sends_the_schema_and_the_token_cap():
     client._client = recorder = Recorder()
     completion = client.complete(
         [{"role": "user", "content": "x"}], model="gpt-4o-mini", temperature=0.0,
-        max_tokens=250, response_format=narrate.RESPONSE_FORMAT,
+        max_tokens=250, response_format=narrate.RESPONSE_FORMAT, seed=42,
     )
     assert recorder.kwargs["response_format"] is narrate.RESPONSE_FORMAT
     assert recorder.kwargs["max_completion_tokens"] == 250
+    assert recorder.kwargs["seed"] == 42
+    assert completion.system_fingerprint == "fp_test"
+
+    client.complete(
+        [{"role": "user", "content": "x"}], model="gpt-4o-mini", temperature=0.0,
+        max_tokens=250, response_format=narrate.RESPONSE_FORMAT, seed=None,
+    )
+    assert "seed" not in recorder.kwargs
     assert completion.text == GOOD
     assert completion.finish_reason == "stop"
     assert (completion.prompt_tokens, completion.completion_tokens) == (400, 70)
@@ -1093,3 +1170,93 @@ def test_render_rates_labels_the_first_attempt_rate_as_the_measure():
 def test_render_rates_reports_an_absent_second_attempt_rate_as_na():
     rates = narrate.rejection_rates([_result([None])])
     assert "n/a" in "\n".join(narrate.render_rates(rates))
+
+
+# ==========================================================================
+# 10. Explanation styles: views over one accepted reply
+# ==========================================================================
+
+def test_short_style_is_the_accepted_summary(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    assert narrate.format_explanation(result, "short") == GOOD_SUMMARY
+
+
+def test_bullets_are_worded_from_the_payload_not_the_model(explanation):
+    """Every word of a bullet is payload data: the model only chose which
+    factors, and that choice already passed the guards."""
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    assert narrate.format_explanation(result, "bullets").splitlines() == [
+        "Risk level: high",
+        "- contract type: Month-to-month (raises risk)",
+        "- months as a customer: 1, much lower than most customers (raises risk)",
+    ]
+
+
+def test_bullets_follow_the_models_reasons_not_every_factor(explanation):
+    """The payload has three factors; this reply gave one reason."""
+    output = reply(reasons=(("contract", "raises risk"),),
+                   summary="Their month-to-month contract drives their risk.")
+    result = narrate.narrate(explanation, client=FakeLLM([output]))
+    bullets = narrate.format_explanation(result, "bullets").splitlines()
+    assert len(bullets) == 2 and "contract type" in bullets[1]
+
+
+def test_detailed_is_the_summary_then_the_bullets(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    detailed = narrate.format_explanation(result, "detailed")
+    assert detailed == "\n".join([
+        GOOD_SUMMARY, "", narrate.format_explanation(result, "bullets"),
+    ])
+
+
+def test_a_value_without_a_number_still_gets_its_comparison():
+    """contractvstenure is compared but its value is never shown."""
+    payload = payload_for(ROW_5_DRIVERS, probability=0.3)
+    line = narrate._reason_line(payload["factors"][1])
+    assert line == ("overall commitment (contract term × months as a customer), "
+                    "lower than most customers (raises risk)")
+
+
+@pytest.mark.parametrize("style", ["short", "bullets", "detailed"])
+def test_no_narrative_falls_back_to_the_payload_factors(style, explanation):
+    """Degraded, not failed: the reader still gets the reasons."""
+    result = narrate.narrate(
+        explanation, client=FakeLLM([BAD_PROTECTED, BAD_PROTECTED]))
+    text = narrate.format_explanation(result, style)
+    assert text.startswith("Risk level: high (no written summary)")
+    assert len(text.splitlines()) == 1 + len(result["payload"]["factors"])
+    assert "senior" not in text
+
+
+def test_an_unknown_style_is_refused(explanation):
+    result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    with pytest.raises(ValueError, match="bullets"):
+        narrate.format_explanation(result, "haiku")
+
+
+def test_formatting_makes_no_call(explanation):
+    client = FakeLLM([GOOD])
+    result = narrate.narrate(explanation, client=client)
+    for style in narrate.EXPLANATION_STYLES:
+        narrate.format_explanation(result, style)
+    assert len(client.calls) == 1
+
+
+def test_the_styles_are_these_three():
+    assert narrate.EXPLANATION_STYLES == ("short", "bullets", "detailed")
+
+
+def test_the_cli_prints_only_the_chosen_style(monkeypatch, capsys):
+    """`narrate.py --dummy --style bullets`, with the real churn model and a
+    fake language model: prints the bullets, not the full report."""
+    monkeypatch.setattr(narrate, "OpenAIClient", lambda: FakeLLM([
+        reply(risk_level="high", reasons=(("contract", "raises risk"),),
+              summary="Their month-to-month contract drives their risk."),
+    ]))
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert narrate.main(["--dummy", "--style", "bullets"]) == 0
+    out = capsys.readouterr().out
+    assert "--- config.DUMMY_CUSTOMER" in out
+    assert "- contract type: Month-to-month (raises risk)" in out
+    assert "EXPLANATION --" not in out
