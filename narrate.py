@@ -3,6 +3,7 @@
 Run:  uv run python narrate.py --dummy
       uv run python narrate.py --csv simulated_new_customers.csv --row 0
       uv run python narrate.py --csv simulated_new_customers.csv --all --rates
+      ... --save outputs/stage2_v3.json   (a paid batch, kept for the notebook)
 
 Needs an API key:  export OPENAI_API_KEY=...   (or `uv run --env-file .env ...`)
 Needs the client:  uv sync --group llm
@@ -79,9 +80,40 @@ the plan is to state both rules in the next prompt version instead.
 
 A prompt v4 stating both rules, with a 40-word summary, was written, measured
 live once and then deleted on 2026-09-19 -- v3 was a day old and hadn't been
-judged yet, and an unused prompt is one more thing to keep in step. Its three
-rules and its measured results are in CHANGELOG.md, and the next prompt is
-v5.
+judged yet, and an unused prompt is one more thing to keep in step. Its rules
+and its measured results are in CHANGELOG.md.
+
+PROMPT v5: SAY ONLY WHAT YOU WERE GIVEN
+v3's 50-customer run (outputs/stage2_v3.json, 2026-09-28) was accepted in
+full -- 2% rejected on the first attempt, 0% finally, and not one false
+statement -- and a read of all 50 still found four habits, every one of them
+the model saying more than it was handed:
+
+  a degree it was not given  "a much lower overall commitment", where the
+                             payload said only "lower"               5 of 50
+  a motive it invented       "indicating a lack of established loyalty"
+                                                                     2 of 50
+  a strength it was not told "these factors do not outweigh ...", and
+                             "significantly lowers their risk"       2 of 50
+  the factors reordered      reasons returned as internetservice, online-
+                             security, contract for a payload sent as
+                             contract, internetservice, onlinesecurity
+                                                                     6 of 50
+
+v5 answers each: degree words need a "much" comparison behind them, guessing
+why a factor matters is forbidden by name, weighing one factor against
+another is forbidden (deliberately including "mainly" -- two factors can
+matter equally for one customer, and the payload never says which is
+stronger), and the order the factors arrive in must survive into both the
+reasons and the summary. 15 of 50 also wrote "risk level"; that is left
+alone, because it is true and reads naturally.
+
+NONE OF THE FOUR IS CHECKED IN CODE. They are prompt rules, not guards. The
+degree rule and a speculation guard both existed briefly in September and
+were removed: they reject text that states no falsehood, which costs a retry
+and a summary for a wording preference. Order is the exception -- it is
+exactly checkable against the payload, and is the obvious next guard if the
+measurement says v5 still reorders.
 
 EXPLANATION STYLES
 One accepted reply can be shown as `short` (the summary), `bullets` (one line
@@ -118,6 +150,7 @@ import pandas as pd
 
 import explain
 import llm_tracing
+import narration_cache
 from config import DUMMY_CUSTOMER, validate_input_frame
 
 # --------------------------------------------------------------------------
@@ -126,9 +159,10 @@ from config import DUMMY_CUSTOMER, validate_input_frame
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# v1 and v2 are kept in prompts/, unused, because the live results in
-# CHANGELOG.md (and outputs/stage1_v2.json) are measurements of those files.
-PROMPT_PATH = REPO_ROOT / "prompts" / "explanation_v3.txt"
+# v1, v2 and v3 are kept in prompts/, unused, because the live results in
+# CHANGELOG.md (and outputs/stage1_v2.json, stage1_v3.json, stage2_v3.json)
+# are measurements of those files.
+PROMPT_PATH = REPO_ROOT / "prompts" / "explanation_v5.txt"
 
 # The prompt's identity, carried in every result so a logged explanation can be
 # traced back to the exact text that produced it. tests/test_narrate.py pins
@@ -512,6 +546,7 @@ _SENT_KEYS = ("risk_level", "factors")
 # the decision. v1 results predate saved payloads and aren't replayable.
 SENT_KEYS_BY_PROMPT = {
     "explanation_v2": ("risk_level", "decision", "factors"),
+    "explanation_v3": _SENT_KEYS,
     PROMPT_VERSION: _SENT_KEYS,
 }
 
@@ -930,6 +965,38 @@ class OpenAIClient:
 # Narration
 # --------------------------------------------------------------------------
 
+def _cached_result(
+    explanation: dict, payload: dict, hit: dict,
+    model: str, temperature: float, seed: int | None,
+) -> dict:
+    """The same shape narrate() returns, rebuilt from a stored answer.
+
+    `attempts` is empty because no call was made: inventing a record would put
+    a latency and a token count into the data that nobody paid for, and
+    rejection_rates() would then count a model attempt that never happened.
+    What the stored answer did cost, when it was first made, is kept in
+    `cached_attempts`.
+    """
+    return {
+        **explanation,
+        "narrative": hit["narrative"],
+        "structured": hit["structured"],
+        "narrative_available": True,
+        "payload": payload,
+        "prompt_version": PROMPT_VERSION,
+        "model": model,
+        "temperature": temperature,
+        "seed": seed,
+        "protected_drivers_omitted": payload["protected_drivers_omitted"],
+        "attempts": [],
+        "final_rejection_type": None,
+        "cache_hit": True,
+        "cached_attempts": hit["attempts"],
+        "cached_at": hit["created_at"],
+        "cached_source": hit["source"],
+    }
+
+
 def narrate(
     explanation: dict,
     client: LLMClient | None = None,
@@ -940,6 +1007,7 @@ def narrate(
     top_n: int = NARRATION_TOP_N,
     tracer=None,
     trace_label: str | None = None,
+    cache=None,
 ) -> dict:
     """Add a validated explanation to an attribution.
 
@@ -956,12 +1024,39 @@ def narrate(
     `tracer` (from llm_tracing.from_env()) sends the call to Langfuse; the
     default records nothing. Tracing never changes the result -- a tracer that
     fails only warns. `trace_label` names the customer in the trace.
+
+    `cache` (from narration_cache.from_env()) answers from a previous identical
+    request instead of calling the API. **The default is no cache**, so the
+    test suite and any run that measures a prompt always meet the real model;
+    the CLI is where caching is on by default. A cached result carries
+    `cache_hit: True` and an empty `attempts` list -- no call was made, so
+    there is nothing to record -- and `rejection_rates()` leaves it out of
+    every rate. A cache hit is not traced either, for the same reason.
     """
     payload = narration_payload(explanation, top_n=top_n)
     messages = build_messages(payload)
-    client = client if client is not None else OpenAIClient()
     tracer = tracer if tracer is not None else llm_tracing.NoopTracer()
     sent = json.loads(messages[1]["content"])
+
+    # Wrapped, like every call into Langfuse: a cache is optional comfort, and
+    # one that misbehaves must cost a little money rather than an explanation.
+    # narration_cache.Cache already swallows its own sqlite errors; this also
+    # covers a caller passing something else that calls itself a cache.
+    key = None
+    if cache is not None and getattr(cache, "enabled", False):
+        try:
+            key = narration_cache.cache_key(
+                payload, PROMPT_VERSION, model, temperature, seed)
+            hit = cache.get(key, PROMPT_VERSION, model)
+        except Exception as error:  # noqa: BLE001 -- see the comment above
+            narration_cache._warn("read", error)
+            key, hit = None, None
+        if hit is not None:
+            return _cached_result(explanation, payload, hit, model, temperature, seed)
+
+    # Constructed only once the cache has missed: building a real client reads
+    # the API key and fails without one, and a cache hit needs neither.
+    client = client if client is not None else OpenAIClient()
 
     attempts: list[dict] = []
     structured: dict | None = None
@@ -1031,7 +1126,9 @@ def narrate(
             "payload": payload,
             "prompt_version": PROMPT_VERSION,
             "model": model,
+            "temperature": temperature,
             "seed": seed,
+            "cache_hit": False,
             "protected_drivers_omitted": payload["protected_drivers_omitted"],
             "attempts": attempts,
             "final_rejection_type": (
@@ -1040,6 +1137,15 @@ def narrate(
         }
         trace.finish(output=llm_tracing.trace_output(result))
         llm_tracing.score_result(trace, result)
+
+    # Only an accepted answer is stored, and only after the trace is closed, so
+    # a cache write can never delay or disturb what was recorded about the call.
+    if key is not None and structured is not None:
+        try:
+            cache.put(key, PROMPT_VERSION, result)
+        except Exception as error:  # noqa: BLE001 -- a failed write costs money,
+            # not correctness: the next identical request simply calls again.
+            narration_cache._warn("write", error)
     return result
 
 
@@ -1076,7 +1182,16 @@ def rejection_rates(results: list[dict]) -> dict:
           as "retries always worked".
       final_rejection_rate          -- over ALL results. What a caller
           actually experiences.
+
+    Cached results are excluded from all three and counted in `cached`: they
+    measure a cache, not a prompt.
     """
+    # A cached result is not a measurement: no call was made, so counting it
+    # would dilute every rate with answers the model was never asked for. It is
+    # reported separately instead, so a batch still adds up.
+    cached = [r for r in results if r.get("cache_hit")]
+    results = [r for r in results if not r.get("cache_hit")]
+
     n = len(results)
     first_rejections = [
         r["attempts"][0] for r in results
@@ -1090,6 +1205,7 @@ def rejection_rates(results: list[dict]) -> dict:
 
     return {
         "n": n,
+        "cached": len(cached),
         "retries_issued": len(retried),
         "first_attempt_rejection_rate": len(first_rejections) / n if n else None,
         "second_attempt_rejection_rate": (
@@ -1129,12 +1245,19 @@ def render(result: dict, title: str) -> list[str]:
             f"  not shown to the model (protected): "
             f"{', '.join(result['protected_drivers_omitted'])}",
         ]
-    lines += [
-        "",
-        f"  prompt {result['prompt_version']} / {result['model']} / "
-        f"{len(result['attempts'])} attempt(s)",
-        "",
-    ]
+    if result.get("cache_hit"):
+        age_hours = (time.time() - result["cached_at"]) / 3600
+        provenance = (
+            f"  prompt {result['prompt_version']} / {result['model']} / "
+            f"from cache ({result['cached_attempts']} attempt(s) when first "
+            f"made, {age_hours:.1f}h ago)"
+        )
+    else:
+        provenance = (
+            f"  prompt {result['prompt_version']} / {result['model']} / "
+            f"{len(result['attempts'])} attempt(s)"
+        )
+    lines += ["", provenance, ""]
     return lines
 
 
@@ -1206,7 +1329,8 @@ def render_rates(rates: dict) -> list[str]:
         "=" * W,
         "REJECTION RATES",
         "=" * W,
-        f"  customers narrated            : {rates['n']}",
+        f"  customers narrated            : {rates['n']}"
+        + (f"   ({rates['cached']} more served from cache)" if rates.get("cached") else ""),
         f"  retries issued                : {rates['retries_issued']}",
         f"  first-attempt rejection rate  : {pct(rates['first_attempt_rejection_rate'])}"
         f"   <- the measure of the prompt",
@@ -1259,7 +1383,24 @@ def main(argv=None) -> int:
                         help="print the three rejection rates for the batch")
     parser.add_argument("--quiet", action="store_true",
                         help="suppress per-customer reports; use with --rates")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="never answer from the cache; use this for any run "
+                             "whose rejection rate you intend to quote")
+    parser.add_argument("--cache-path", metavar="PATH",
+                        help=f"cache database (default {narration_cache.DEFAULT_DB_PATH})")
+    parser.add_argument("--save", metavar="PATH",
+                        help="write every result as JSON, for LLMcalls.ipynb "
+                             "(refuses an existing file)")
     args = parser.parse_args(argv)
+
+    # Checked before a single call is made. A paid batch that ends with
+    # "file exists" would have to be paid for twice, and overwriting a saved
+    # run destroys a measurement that cost money -- so this refuses rather
+    # than replacing, and refuses early.
+    if args.save and Path(args.save).exists():
+        print(f"{args.save} already exists; choose another name. Nothing was "
+              f"sent to the API.", file=sys.stderr)
+        return 2
 
     customers = _customers(args)
     pipeline = explain.load_model()
@@ -1276,29 +1417,50 @@ def main(argv=None) -> int:
     if tracer.enabled:
         print(f"Tracing to Langfuse, session '{tracer.session_id}'.", file=sys.stderr)
 
+    # On by default here, unlike the library: a person running this twice on
+    # the same customer should not pay twice. --no-cache is the measurement
+    # switch.
+    cache = None if args.no_cache else narration_cache.from_env(args.cache_path)
+
     results, failures = [], []
     for name, customer in customers:
         explanation = explain.explain_customer(customer, model=pipeline, top_n=None)
         try:
             result = narrate(
                 explanation, client=client, model=args.model, top_n=args.top,
-                tracer=tracer, trace_label=name,
+                tracer=tracer, trace_label=name, cache=cache,
             )
         except Exception as error:  # noqa: BLE001 -- one bad call must not
             # discard the calls already paid for. The library lets this
             # propagate; the CLI is where a partial batch is still useful.
             failures.append((name, f"{type(error).__name__}: {error}"))
             continue
+        # Not part of narrate()'s result: which customer this was, so a saved
+        # batch names its rows the way tests/test_narrate_live.py does.
+        result["case"] = name
         results.append(result)
         if args.style:
             print(f"--- {name}\n{format_explanation(result, args.style)}\n")
         elif not args.quiet:
             print("\n".join(render(result, f"EXPLANATION -- {name}")))
 
+    # Saved even when part of the batch failed: those calls were paid for, and
+    # a partial run is still worth reading. Written before the rates are
+    # printed so an error in reporting cannot lose the results.
+    if args.save and results:
+        Path(args.save).write_text(json.dumps(results, indent=2))
+        print(f"Saved {len(results)} result(s) to {args.save}.", file=sys.stderr)
+
     if args.rates and results:
         print("\n".join(render_rates(rejection_rates(results))))
 
     tracer.flush()
+    if cache is not None:
+        hits = sum(1 for r in results if r.get("cache_hit"))
+        if cache.enabled and results:
+            print(f"{hits} of {len(results)} served from cache ({cache.path}).",
+                  file=sys.stderr)
+        cache.close()
     for name, error in failures:
         print(f"FAILED {name}: {error}", file=sys.stderr)
     return 1 if failures and not results else 0

@@ -6030,3 +6030,517 @@ stake.
 **Verification status:** `git log` shows `ff77fb1` as the single commit ahead
 of `main`. Documentation only. **Committed** as a second commit on the same
 branch. Not pushed.
+
+## 2026-09-28 — `narrate.py --save`: keep a paid batch
+
+**Files touched:**
+- `narrate.py`
+- `tests/test_narrate.py`
+
+**What changed:** The CLI gained `--save PATH`, which writes every result of a
+batch as JSON in the shape `LLMcalls.ipynb` reads. Until now only
+`tests/test_narrate_live.py` could save a run, and it is hard-wired to its 13
+customers, so a 50-customer batch could be paid for but never reopened.
+
+Three deliberate details:
+- **It refuses an existing file, and refuses before any API call.** Over-
+  writing a saved run destroys a measurement that cost money, and a batch that
+  died at the end would have to be paid for twice.
+- **A partial batch is still saved.** If one customer's call raises, the ones
+  already answered are written anyway, and the file is written before the
+  rates are printed so a reporting error cannot lose them.
+- **Each result carries a `case` label** ("simulated_new_customers.csv row 7"),
+  matching what the live test writes, so the notebook can name rows.
+
+Five tests: one entry per customer with the keys the notebook reads, the case
+label, the refusal on an existing file with no call made and the file left
+untouched, a partial batch saved, and no file written without the flag.
+
+**Why:** Requested, as the prerequisite for the 50-customer run.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** `uv run pytest -q`: 464 passed, 1 skipped, 10 live
+deselected. Also dry-run over all 50 rows with a local echo client, no
+network: 50 calls, 50 results saved, labels correct. **Not committed.**
+
+## 2026-09-28 — Stage 2: all 50 customers on prompt v3, live
+
+**Files touched:** `outputs/stage2_v3.json` (new, gitignored).
+
+**Command:** `uv run --env-file .env python narrate.py --csv
+simulated_new_customers.csv --all --quiet --rates --save
+outputs/stage2_v3.json`
+
+**The run:** 50 customers, 51 calls (one retry), 1 minute 51 seconds, 34,348
+input and 4,536 output tokens, **$0.0079**. Cumulative live spend is now
+about **$0.015** of the $0.50 cap. Traced to Langfuse as session
+`cli-20260928-120933`.
+
+**Rejection rates:** first attempt 2.0% (1 of 50), final **0%**. The single
+rejection was `unlisted_field` on row 18, and it was a fair one: the summary
+said "no internet service for online security", which names internetservice,
+a factor it was not given. The retry said "no online security add-on" and was
+accepted.
+
+**Shape of the sample:** 21 low, 14 moderate, 11 high, 4 very high. No
+customer has a protected driver in its top three, so the protected-omission
+path is still exercised only offline. Summaries ran 28–50 words (median 35),
+output 78–104 tokens, average latency 2.0 s. Two `system_fingerprint` values
+appeared, so the backend changed during the run.
+
+**What a read of all 50 found** — none of these is a false statement, and no
+guard fires on any of them:
+- **Overstated degree, 5 of 50**, every one the same: a commitment that is
+  "lower than most customers" described as "much lower". Always
+  contractvstenure, never another field.
+- **Invented motive, 2 of 50**: "can indicate a preference for premium
+  options" (row 0) and "indicating a lack of established loyalty" (row 23).
+- **Reasons out of the given order, 6 of 50.** The factors are sent strongest
+  first; these listed them in another order, usually putting contract last.
+- **"risk level" as a phrase, 15 of 50** ("has a high risk level due to").
+  It is the name of the field they are sent, and v3 bans models, scores and
+  thresholds but not this.
+- **Invented weighing, 1 of 50**: row 17, "these factors do not outweigh the
+  positive aspect", which claims a comparison of strengths the model was
+  never given. It is also the longest summary at 50 words.
+- **Payload wording reused, 30 of 50** ("most customers"). Left as acceptable:
+  that phrasing was deliberately made plain in v3 so that copying it is not
+  jargon, unlike v2's "well above typical".
+
+**For the cache question:** the 50 customers produce only **41 distinct model
+inputs**, so 9 of 50 (18%) would have been cache hits on a single pass.
+
+**Why:** Requested: "add the --save, make a 50 customer check ... do it".
+
+**Requested or incidental:** Requested.
+
+**Verification status:** The run is as reported; figures computed from the
+saved file. `outputs/` is gitignored, so the file is local only. The notebook
+has **not** been re-executed against it yet. **Not committed** (the `--save`
+code it needed is also uncommitted).
+
+## 2026-10-06 — docs/DEMO.md: a runbook for showing the project
+
+**Files touched:**
+- `docs/DEMO.md` (new)
+
+**What changed:** A single page holding every command needed to run and
+demonstrate the project, in the order someone would show it: setup and the
+dependency groups, the API with its health and prediction calls and the 422
+on an unknown category, serving `frontend/index.html`, batch scoring, the
+offline explanation CLI, the LLM narration and its three styles, the
+read-only notebook for saved runs, the test suite, Docker with both
+entrypoints, the version gate and the fairness report, and a troubleshooting
+section.
+
+It states up front which commands cost money (only the LLM ones) and that
+nothing in it retrains the model. Three warnings earned the hard way this
+session are written down: `uv sync` replaces rather than extends the
+environment, so groups must be named together; the frontend needs a port
+other than the API's 8000; and native Windows cannot load the model.
+
+**Why:** Requested: "i wanna fully start the project for show off, can you
+create a separate md file that will have all commands for starting the
+project". It goes in `docs/` per this repo's layout rule; `README.md`
+explains the project, this explains how to run it.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Every command was run today except the Docker ones
+(slow) and the paid LLM ones. Checked live: `uvicorn api:app` serving
+`/health` (`model_loaded: true`), `/predict` returning
+`0.7443000078201294`, `/docs` answering 200, an unknown `contract` rejected
+with 422 and a readable message, `python3 -m http.server --directory
+frontend` serving the page, `telco_model.py` flagging 15 of 50,
+`explain.py --dummy` and `--all --top 3`, `check_model_environment.py`
+printing OK, `fairness_analysis.py --help`, `uv run --group notebook --group
+llm` importing matplotlib, openai and jupyterlab together, and `uv run pytest
+-q` at 464 passed. The Docker commands are copied from `README.md` and are
+the ones CI runs. **Not committed.**
+
+## 2026-10-07 — Prompt v5: say only what you were given
+
+**Files touched:**
+- `prompts/explanation_v5.txt` (new)
+- `narrate.py`
+- `tests/test_narrate.py`
+- `tests/test_llm_tracing.py`
+- `LLMcalls.ipynb`
+- `CLAUDE.md`
+
+**What changed:** The narration layer now loads **v5**. It is v3 plus four
+rules, each answering a habit found by reading all 50 summaries of the
+2026-09-28 stage-2 run — none of which is a false statement, and none of which
+any guard catches:
+
+| habit, with its stage-2 count | v5's rule |
+|---|---|
+| a degree it was not given: "a much lower overall commitment" where the payload said "lower" (5 of 50, all the same sentence) | `much`, `far`, `very` and `significantly` only when the comparison itself says "much" |
+| a motive it invented: "indicating a lack of established loyalty" (2 of 50) | say what the factor is and which way it moves risk, and stop; no "may", "might", "perhaps", "suggests", "indicates", "a sign of" |
+| a strength it was not told: "these factors do not outweigh ...", "significantly lowers their risk" (2 of 50) | never weigh one factor against another; "outweighs", "mainly", "the biggest reason", "more important than" are all named |
+| the factors reordered (6 of 50) | the given order must survive into both `reasons` and the summary; "strongest first" became an instruction instead of a description of the input |
+
+**"mainly" is banned on purpose**, at the user's instruction: two or three
+factors can matter equally for one customer, and the payload never says which
+is stronger, so any ranking language is a claim the model cannot support. The
+order the factors arrive in carries that information implicitly.
+
+**"risk level" was deliberately left alone.** 15 of 50 wrote it ("contributing
+to their low risk level"); the user's judgement is that it is true and reads
+naturally, so no rule was added.
+
+**None of the four is checked in code.** They are prompt rules. A degree guard
+and a speculation guard both existed briefly in September and were removed,
+because they reject text that states no falsehood and cost a retry and a
+summary for a wording preference. Order is the exception: it is exactly
+checkable against the payload and is the obvious next guard if v5 still
+reorders.
+
+Everything else is carried over untouched, including the 60-word limit, the
+protected attributes, the numbers rule and the no-decision rule.
+
+Supporting changes:
+- `narrate.py`: `PROMPT_PATH` points at v5; **`explanation_v3` was added to
+  `SENT_KEYS_BY_PROMPT`**, without which backfilling `stage1_v3.json` or
+  `stage2_v3.json` to Langfuse would raise; the module docstring gains a v5
+  section with the table above and the note that nothing enforces it; the
+  comment listing kept prompts now reads "v1, v2 and v3".
+- `tests/test_narrate.py`: the current-prompt sha256 pin is v5's; v3's sha is
+  pinned among the kept-unchanged prompts; the two tests asserting the
+  prompt version now expect `explanation_v5`; and the two tests pinning that
+  an overstated degree and a hedged guess are **accepted** now say explicitly
+  that v5 forbids both in the prompt while the guards still allow them.
+- `tests/test_llm_tracing.py`: the trace-tag assertion expects v5.
+- `LLMcalls.ipynb`: `WORD_LIMIT` gained `explanation_v5` (60 words), and the
+  notebook was re-executed — it now reads `outputs/stage2_v3.json`, so the
+  cards, table and charts show all 50 customers.
+- `CLAUDE.md`: the `prompts/` row names v5 as current, lists its four rules,
+  says none is enforced in code, and records that v3 is kept because
+  `stage2_v3.json` measures it.
+
+**Why:** Requested: "lets apply the changes 1,2,3,4 ... add this as a prompt",
+with the two judgements above about "mainly" and "risk level".
+
+**Requested or incidental:** Requested. **Incidental:** the `explanation_v3`
+entry in `SENT_KEYS_BY_PROMPT` is a consequence of the bump, and the notebook
+re-execution is a consequence of editing one of its cells.
+
+**Verification status:**
+- `uv run pytest -q`: 465 passed, 1 skipped, 10 live deselected. One test more
+  than before, the added v3 hash pin.
+- The notebook re-executed with no errors.
+- **v5 has never been sent to the API.** Every number on record — 2% first
+  attempt, 0% final, and the four counts above — measures v3. Measuring v5
+  means re-running the same 50 customers, about $0.009. **Not committed.**
+
+## 2026-10-07 — Note: the notebook typo was fixed by the user
+
+**Files touched:** none by me; `LLMcalls.ipynb` was edited by the user.
+
+**What changed:** The entry for 2026-09-28 and the session notes recorded a
+stray edit in `LLMcalls.ipynb`, `import pandas as pduv` instead of `as pd`,
+which came from a keystroke landing in the editor. By the time this session
+went to fix it, it was already `as pd` — the user had corrected it. The
+notebook also has one more cell than the committed version, added by the
+user. Both were kept as found; the only assistant edits to that file today
+are the `WORD_LIMIT` entry and the re-execution described above.
+
+**Why:** So the record doesn't claim an assistant fix that never happened,
+and so the extra cell isn't mistaken for an accident later.
+
+**Requested or incidental:** Incidental: a correction to the record.
+
+**Verification status:** Confirmed by reading the file: cell 1 imports pandas
+as `pd`, 25 cells, no error outputs. **Not committed.**
+
+## 2026-10-07 — Prompt v5 measured live on the same 50 customers: all four habits gone
+
+**Files touched:** `outputs/stage2_v5.json` (new, gitignored), `LLMcalls.ipynb`
+(re-executed).
+
+**Command:** `uv run --env-file .env python narrate.py --csv
+simulated_new_customers.csv --all --quiet --rates --save
+outputs/stage2_v5.json`
+
+**The run:** 50 customers, 51 calls (one retry), 2 minutes 9 seconds, 42,102
+input and 4,575 output tokens, **$0.0091**. Cumulative live spend about
+**$0.024** of the $0.50 cap. The input tokens are up 23% on v3's run because
+the prompt is longer; output is unchanged.
+
+**Like-for-like against stage 2 on v3** — same 50 customers, same model, same
+seed, only the prompt differs:
+
+| | v3 | v5 |
+|---|---|---|
+| degree it was not given | 5/50 | **0/50** |
+| guessed a motive | 2/50 | **0/50** |
+| weighed factors against each other | 1/50 | **0/50** |
+| reordered the factors | 6/50 | **0/50** |
+| said "risk level" | 15/50 | 1/50 |
+| first-attempt rejection | 1 (`unlisted_field`) | 1 (`unlisted_field`) |
+| final rejection | 0% | 0% |
+| summary words min/median/max | 28/35/50 | 29/36/42 |
+
+All four rules worked. "risk level" fell from 15 to 1 without being asked —
+a side effect of the other rules changing the sentence shape. No summary is
+identical to its v3 counterpart.
+
+The single rejection (row 17) was fair and the same kind as v3's: the summary
+said "they do not have internet service for online security", naming
+internetservice, which was not among the factors. The retry said "an online
+security add-on" and was accepted.
+
+**The cost of the win, measured:**
+- **"which raises/lowers their risk" appears in 43 of 50 summaries**, against
+  3 of 50 under v3. Asking the model to state each factor's direction and
+  stop made it state the direction every time, in the same words. Direction
+  clauses per summary went from 0.78 to 1.64.
+- **4 of 50 stopped naming the value**: "This customer has a contract type
+  that reduces their risk" instead of "a two-year contract". The rule against
+  describing a size it was not given appears to have been over-applied to the
+  value itself.
+
+Neither is a false statement. Both are candidates for a v6, and both are
+exactly the kind of thing only reading the output catches.
+
+**Langfuse did not record this run.** DNS resolution for cloud.langfuse.com
+failed throughout; the SDK retried, gave up and warned. **Every narration
+completed normally** — that is the "a tracing failure must never alter a
+result" rule doing its job, observed for the first time in a real run. The run
+can be uploaded later with `llm_tracing.py --backfill outputs/stage2_v5.json`
+at no cost.
+
+**The notebook** was re-executed and now reads `stage2_v5.json`: 50 cards,
+the summaries table, the charts, and the cross-run comparison across all four
+saved runs.
+
+**Why:** Requested: "run the online calls. update the notebook".
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Figures computed from the saved file; the notebook
+re-executed with no errors; `uv run pytest -q` unchanged at 465 passed, 1
+skipped, 10 deselected. **Not committed** (`outputs/` is gitignored; the
+notebook and prompt v5 are not committed either).
+
+## 2026-10-07 — narration_cache.py: a SQLite cache so an explanation is paid for once
+
+**Files touched:**
+- `narration_cache.py` (new)
+- `tests/test_narration_cache.py` (new)
+- `.gitignore`
+
+**What changed:** A small SQLite cache for accepted narrations, modelled on
+`llm_tracing.py` — optional, lazy, and unable to break a narration. Standard
+library `sqlite3` only, so `pyproject.toml`, `uv.lock`, CI and the image are
+untouched.
+
+- **It is a cost guard, not a store of record.** The JSON files in `outputs/`
+  remain the measurements of a prompt version. The database can be deleted at
+  any moment and nothing is lost but money. Only accepted answers are stored: a
+  rejection is evidence about a prompt, and the next caller deserves a real
+  attempt rather than someone else's failure.
+- **The key is the input, not the customer.** A sha256 over
+  `narrate.sent_payload()` — the same function that builds the user turn — plus
+  model, temperature and seed. Two customers with the same three factors and
+  the same risk band share one entry, which is why the 50-customer run imports
+  as 41 rows.
+- **One table per prompt version** (`cache_explanation_v5`), so a v3 answer can
+  never be served to a v5 request even when the inputs match, and retiring a
+  version is one `DROP TABLE`. The version is validated against
+  `^[a-z0-9_]+$` before it reaches the SQL, because a table name cannot be a
+  bound parameter.
+- **Entries expire**, one hour by default, `NARRATION_CACHE_TTL` overrides.
+  Eviction is lazy: an expired row reads as a miss and is deleted on the way
+  past. `--prune` sweeps a file.
+- **It degrades instead of failing.** A directory where the file should be, a
+  file that is not a database, an unwritable parent, a locked database mid-run:
+  each warns once and becomes a `NoopCache`, and narration carries on paying
+  for calls.
+- **CLI:** `--stats`, `--prune`, `--import FILE...`, `--import-all`. Importing
+  a saved run uses the run's **own** `prompt_version`, never today's — the rule
+  `llm_tracing.backfill()` follows — and stamps each row with the file name, so
+  nothing imported can be mistaken for a live answer.
+
+`.gitignore` gains `data/`: the cache is disposable and rebuildable from
+`outputs/`.
+
+**46 tests**, all offline against real SQLite in `tmp_path`, weighted toward
+the quiet failures: a key that ignores the model, temperature, seed or a
+factor's value; one prompt version seeing another's rows; an expired row being
+served; and every way the database can be broken. One test imports the real
+`outputs/stage2_v5.json` when it is present and asserts rows ≤ answers, which
+is the de-duplication the whole idea rests on.
+
+**Why:** Requested. The next two steps — an `/explain` endpoint and any
+repeated demo — would otherwise pay for every click, and the stage-2 run showed
+only 41 distinct inputs among 50 customers.
+
+**Requested or incidental:** Requested, to the approved plan.
+
+**Verification status:** `uv run pytest -q`: 525 passed, 1 skipped, 10 live
+deselected. `uv lock --check` clean; `pyproject.toml`, `uv.lock` and the
+`Dockerfile` are untouched. **Not committed.**
+
+## 2026-10-07 — narrate.py uses the cache: library off, CLI on
+
+**Files touched:**
+- `narrate.py`
+- `tests/test_narrate.py`
+- `tests/conftest.py`
+
+**What changed:**
+- `narrate(..., cache=None)`. **The library default is no cache**, mirroring
+  `tracer=`, so the test suite and any run that measures a prompt always meet
+  the real model. The **CLI is the opposite**: it caches by default, with
+  `--no-cache` as the measurement switch and `--cache-path` to point elsewhere,
+  because that is where a person runs the same customer twice. The CLI prints
+  `N of M served from cache`.
+- A cache hit returns before the client is constructed (so a hit needs no API
+  key) and before the trace is opened (no call was made, so there is nothing to
+  trace). `_cached_result()` rebuilds the full result: the whole attribution,
+  `cache_hit: True`, an **empty** `attempts` list, and `cached_attempts`,
+  `cached_at`, `cached_source` describing the stored answer. Attempts are left
+  empty deliberately — inventing a record would put a latency and a token count
+  into data nobody paid for.
+- Every result now also carries `temperature` and `cache_hit`.
+- **`rejection_rates()` excludes cached results** and reports them as `cached`.
+  Without this, re-running a batch would report a rate it never measured.
+  `render()` says "from cache (N attempt(s) when first made, Xh ago)" instead
+  of an attempt count, and `render_rates()` adds "(N more served from cache)".
+- Cache calls in `narrate()` are wrapped: `narration_cache.Cache` already
+  swallows its own SQLite errors, and this covers anything else passed in. A
+  cache that raises on every call warns and costs a little money; the narration
+  is byte-identical.
+- `tests/conftest.py` gains an **autouse fixture pointing the cache default at
+  `tmp_path`**. Without it the CLI tests wrote into the real
+  `data/narration.sqlite3` and a later test was answered from what an earlier
+  one had stored — which is exactly how it was found.
+
+**14 new tests**: no cache means every call reaches the model; an identical
+request is served once; a cached result keeps the whole attribution; a
+different customer, a changed seed and a rejected narration all miss; a hostile
+cache cannot change a narration; the rates arithmetic with cached rows,
+including an all-cached batch reporting `None` rather than 0%; both render
+paths; and both CLI defaults.
+
+**Why:** Requested, to the approved plan.
+
+**Requested or incidental:** Requested. **Incidental:** the conftest fixture
+and the `--no-cache` default in `test_narrate.py`'s CLI helper, both of which
+exist because the CLI's new default leaked into unrelated tests.
+
+**Verification status:** 525 passed, 1 skipped, 10 deselected. Live check, 1
+paid call (~$0.0002, cumulative ~$0.024): `narrate.py --dummy --style short`
+answered **from cache on the very first run** — DUMMY_CUSTOMER's input matches
+a row imported from `stage2_v5.json`, which is the de-duplication working
+across customers — and `--no-cache` then made a real call and produced the same
+facts in different words. **Not committed.**
+
+## 2026-10-07 — Docs for the cache: CLAUDE.md and docs/DEMO.md
+
+**Files touched:**
+- `CLAUDE.md`
+- `docs/DEMO.md`
+
+**What changed:**
+- `CLAUDE.md` gains a layout row for `narration_cache.py`, a line in "Where
+  files go" sending the cache to `data/narration.sqlite3` (gitignored, and
+  compatible with the still-planned `data/` move), and a convention: **any run
+  whose rejection rate you intend to quote passes `--no-cache`.**
+- `docs/DEMO.md` gains a section 5b showing the same customer answered twice —
+  the second free — plus `--import-all`, `--stats`, and the same `--no-cache`
+  warning.
+
+**Why:** The cache changes what a second command costs and what a rejection
+rate means; both facts belong where they are read.
+
+**Requested or incidental:** Incidental: the documentation half of the
+requested work.
+
+**Verification status:** Documentation only; the commands in the new DEMO
+section were run (see the entry above). **Not committed.**
+
+## 2026-10-07 — Cache expiry becomes a two-level policy, with an escape hatch
+
+**Files touched:**
+- `narration_cache.py`
+- `narrate.py`
+- `tests/test_narration_cache.py`
+- `CLAUDE.md`
+- `docs/DEMO.md`
+
+**What changed:** The flat one-hour TTL is replaced by a policy with three
+numbers, at the user's request:
+
+| situation | an entry lives |
+|---|---|
+| its prompt and model are the ones in use | **7 days** |
+| it was born in that prompt's **first 24 hours** (settling) | **24 hours** |
+| its prompt or model has been **switched away from** | **24 hours from the switch** |
+
+The reasoning for each, and why the third one matters less than it sounds:
+- A week is safe because a stale entry cannot be wrong in the dangerous way —
+  a changed prompt means a different table, a changed model means a different
+  key.
+- The settling day covers the hours when a prompt is being judged and re-run;
+  hour-one wording should not persist for a week.
+- Retirement is housekeeping **plus a rollback window**. Those entries were
+  already unreachable, so this is not about serving a wrong answer: it means a
+  rollback within a day finds the old cache warm — exactly how the v4-to-v3
+  rollback went — and a rollback a week later starts cold.
+
+**Made easy to change, which was the explicit ask.** The four constants sit
+together under a header comment at the top of the module and feed one pure
+function, `expires_at(created_at, first_seen, retired_at, flat_ttl)`, which has
+no database, clock or I/O in it. Every read, prune and report goes through it.
+**`--ttl 3600` or `NARRATION_CACHE_TTL=3600` replaces the entire policy with a
+flat TTL**, so if any of this proves to be a bad idea it can be switched off
+without editing code.
+
+Supporting machinery:
+- A `meta_pairs` table records when each (prompt version, model) pair was first
+  seen, last used and retired. Deliberately **not** named `cache_*`: that
+  prefix marks the answer tables. It survives `--prune`, or emptying the cache
+  would restart every settling window by accident.
+- `Cache.touch()` marks the pair being used and retires every other, so
+  switching prompts, switching models and rolling back are all one mechanism.
+  `get()` now takes the model, and `narrate()` passes it.
+- **`get()` reads the pair's state before touching it.** Asking for a retired
+  prompt is a rollback and makes it current again — but the rows stored under
+  it are still judged by the retirement they were under when the request
+  arrived. Without this ordering, coming back a week later would silently
+  revive week-old answers, which is the opposite of what was asked for. The
+  test for it was failing until the order was fixed.
+- `import_run()` stores with `touch=False`: loading an old v2 file must not
+  declare v2 current and retire the prompt actually in use.
+- `prune()` now walks rows rather than issuing one DELETE per table, because
+  the allowance depends on each row's own age and its pair's state.
+- `--stats` prints each pair as "in use", "settling" or "retired", with how
+  long it has been in that state, plus the three numbers in force — or "a flat
+  Ns (policy overridden)".
+
+**15 new tests.** Six check `expires_at()` as a pure function with literal
+numbers (a test that quoted the constants would pass whatever they became);
+nine drive the same policy through SQLite with timestamps written directly
+rather than slept through, covering a settled entry surviving three days, a
+settling entry gone after two, switching prompt and switching model each
+retiring the old pair, a retired entry dying a day after the switch even though
+it is only two days old, a rollback within the day still finding the cache
+warm, coming back un-retiring a prompt, importing not retiring anything, and a
+flat TTL ignoring all of it.
+
+**Why:** Requested: "ttl is 1 week, but the ttl drops to 24 hours ... after the
+prompt or model change", clarified to mean the previous prompt's entries, plus
+"make it possible to easily change the code if it goes wrong".
+
+**Requested or incidental:** Requested. **Incidental:** `get()` gained a model
+argument, which changed `narrate()`'s call site and the no-op cache's
+signature.
+
+**Verification status:** `uv run pytest -q`: 540 passed, 1 skipped, 10 live
+deselected. End to end against the real cache: `--stats` shows
+`explanation_v5 / gpt-4o-mini  settling  0.0h` and the three numbers, and
+`narrate.py --dummy` was served from cache (no API call, no spend). **Not
+committed.**

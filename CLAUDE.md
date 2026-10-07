@@ -41,8 +41,9 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `docs/AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. Cited throughout as "AUDIT.md M9" etc.; those citations mean this file. |
 | `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), and the local `AUDIT.md`. |
 | `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
-| `prompts/` | Versioned LLM system prompts. `narrate.py` loads one; tests pin each file's sha256. Never edit a prompt in place — add `explanation_vN+1.txt`. Current: v3; the next one is v5 (a v4 was written, measured once and deleted — see CHANGELOG.md, 2026-09-19). When bumping, also add the old version to `narrate.SENT_KEYS_BY_PROMPT`, or backfilling its saved runs raises. |
+| `prompts/` | Versioned LLM system prompts. `narrate.py` loads one; tests pin each file's sha256. Never edit a prompt in place — add `explanation_vN+1.txt`. Current: **v5** (2026-10-07): v3 plus four "say only what you were given" rules — degree words need a "much" comparison, no guessing why a factor matters, no weighing factors against each other, and the given order must survive. None of the four is checked in code. v3 is kept because `stage2_v3.json` measures it; a v4 was written, measured once and deleted (CHANGELOG.md, 2026-09-19), and that number is not reused. When bumping, also add the old version to `narrate.SENT_KEYS_BY_PROMPT`, or backfilling its saved runs raises. |
 | `llm_tracing.py` | Optional Langfuse tracing for `narrate()`: one trace per narration, one generation per API attempt, guard verdicts as scores, session per run. **Off unless handed a tracer**; `from_env()` is a no-op without `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`. Every SDK call is wrapped so a Langfuse failure only warns and never changes a result. `--check` tests the keys; `--backfill outputs/x.json` uploads a saved run with no model calls. SDK (v4, `llm` group) imported lazily. Tested offline against the real SDK with an in-memory exporter (`tests/test_llm_tracing.py`). |
+| `narration_cache.py` | Optional SQLite cache for `narrate()`, keyed by **exactly what the model was sent** plus model/temperature/seed. One table per prompt version (`cache_explanation_v5`), so a v3 answer can never be served to a v5 request. Entries live a **week** while a prompt is current, **24h** if born in a prompt's first day (settling), and **24h after the prompt or model is switched away from** — a rollback window. The four numbers and the pure `expires_at()` they feed are at the top of the module; `--ttl` or `NARRATION_CACHE_TTL` replaces the whole policy with a flat TTL (the escape hatch). **Off unless handed a cache in the library, on by default in the CLI** — `--no-cache` is the measurement switch. `sqlite3` only, so no dependency, no image change. `--import-all` loads saved runs from `outputs/` at no cost; `--stats`, `--prune`. A cache failure warns and degrades, exactly like `llm_tracing.py`. |
 | `LLMcalls.ipynb` | Read-only viewer for saved LLM runs in `outputs/*.json`: overview and cost, the system prompt, one input/output card per customer (showing exactly what that prompt version was sent), a summaries table, token/latency/length plots, a phrase-flagging aid, the three explanation styles (§8), and a cross-run comparison that re-checks every saved reply with today's guards (§9). **Makes no API calls.** Uses `narrate.rejection_rates()` rather than recomputing rates. Stored with outputs (~160 KB). |
 | `frontend/` | `index.html`, a single static page calling `/predict`. No build step. |
 
@@ -57,6 +58,9 @@ again:
   (gitignored). The one exception is `retention_campaign_targets.csv`, which
   `telco_model.py` still writes to the root by default (also gitignored).
 - **Prompts** → `prompts/`, one versioned file each.
+- **The narration cache** → `data/narration.sqlite3` (gitignored, created on
+  demand, `NARRATION_DB` overrides it). `data/` is otherwise still reserved for
+  the planned move below; the cache file is compatible with it.
 - **Notebooks** stay in the root beside `telco_customer_churn.ipynb` for now.
 
 **Planned next step, not done yet ("medium" layout):** `data/` for
@@ -241,6 +245,10 @@ number the README publishes. Check these, in order:
   removes in 1.10. Same search space, but the code paths aren't
   bit-identical — the LR row's ROC-AUC moved 0.843897 → 0.843891. That cell
   now runs warning-free.
+- **Any run whose rejection rate you intend to quote passes `--no-cache`.**
+  `rejection_rates()` excludes cached results and reports them separately, so a
+  cached batch cannot silently dilute a measurement — but a run that is half
+  cache hits measures half as much as it looks like it does.
 - The profit formula lives in `campaign_profit.py` and nowhere else. Don't
   retype `tp * success_rate * clv - (tp + fp) * cost` in a new cell — it was
   duplicated 7 times before (AUDIT.md C11).

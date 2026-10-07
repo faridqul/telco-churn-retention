@@ -37,5 +37,11 @@ docs/AUDIT.md
 outputs/*
 !outputs/.gitkeep
 
+# The narration cache (narration_cache.py). Disposable by design: it holds
+# answers that were already paid for and can be rebuilt from outputs/ with
+# `--import-all`. Never committed -- it is a local cost guard, not a
+# measurement.
+data/
+
 .env
 .env.*

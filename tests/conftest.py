@@ -5,6 +5,25 @@ pytest imports this automatically; nothing needs to import it by name.
 from dataclasses import dataclass
 
 import numpy as np
+import pytest
+
+import narration_cache
+
+
+@pytest.fixture(autouse=True)
+def _cache_in_a_temp_file(tmp_path, monkeypatch):
+    """No test may touch the real narration cache.
+
+    narrate.py's CLI caches by default, so without this a test run would write
+    into data/narration.sqlite3 -- and a later test would then be answered from
+    what an earlier one stored, which is exactly the order-dependent failure
+    this fixture was added for. One fresh database per test, discarded with
+    tmp_path. The default is patched rather than the environment variable
+    because narration_cache reads the variable once, at import.
+    """
+    monkeypatch.setattr(
+        narration_cache, "DEFAULT_DB_PATH", str(tmp_path / "narration.sqlite3")
+    )
 
 DUMMY_CHURN_PROBABILITY = 0.8
 

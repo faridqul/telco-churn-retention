@@ -42,17 +42,21 @@ import pytest
 
 import explain
 import narrate
+import narration_cache
 from tests.conftest import FakeLLM
 
 # The prompt this suite was written against. Pinned so that editing the
 # wording without bumping PROMPT_VERSION fails here: every rejection rate ever
 # recorded is a measurement OF a specific prompt.
-PROMPT_SHA256 = "65b5fb869bdd43b41a425daa18045edddcb8cc188d499cbc088541915f47e168"
+PROMPT_SHA256 = "fac2052f60a23383f90da374aa3e34ef6d80a4f6f98145f020e9a12d7eb9a89e"
 
 # Earlier versions, kept unused because live results measure them: v1 in
 # CHANGELOG.md, v2 in CHANGELOG.md and outputs/stage1_v2.json.
 PROMPT_V1_SHA256 = "00d47880a6d95a9792b3c89bc89725d46cd14d3b6b19467290f149763cdd941f"
 PROMPT_V2_SHA256 = "b1f98f68c418440b559d5e23f3e24b47adfb4ba0256cf81f26464d4d678c595d"
+# v3 shipped from 2026-09-17 to 2026-10-07; stage1_v3.json and stage2_v3.json
+# (50 customers) measure it.
+PROMPT_V3_SHA256 = "65b5fb869bdd43b41a425daa18045edddcb8cc188d499cbc088541915f47e168"
 
 GOOD_SUMMARY = (
     "This customer is on a month-to-month contract and has been with us only "
@@ -363,6 +367,7 @@ def test_prompt_text_is_pinned():
 
 @pytest.mark.parametrize("version, sha", [
     ("explanation_v1", PROMPT_V1_SHA256), ("explanation_v2", PROMPT_V2_SHA256),
+    ("explanation_v3", PROMPT_V3_SHA256),
 ])
 def test_earlier_prompts_are_kept_unchanged(version, sha):
     """Live results in CHANGELOG.md and outputs/ are measurements of these."""
@@ -378,7 +383,7 @@ def test_messages_are_a_system_turn_then_a_user_turn(payload):
 
 def test_the_prompt_version_travels_with_every_result(explanation):
     result = narrate.narrate(explanation, client=FakeLLM([GOOD]))
-    assert result["prompt_version"] == "explanation_v3"
+    assert result["prompt_version"] == "explanation_v5"
 
 
 def test_the_request_asks_for_strict_json_and_caps_output_tokens(explanation):
@@ -792,9 +797,11 @@ ROW_5_REASONS = (
 
 def test_an_overstated_degree_is_not_rejected():
     """v3's live row 5 said "much lower" for a commitment that is only
-    "lower". Deliberately allowed: the direction and size are right, and v3's
-    prompt doesn't ask for more. A degree guard was built and removed on
-    2026-09-17; the rule is meant for the next prompt version instead."""
+    "lower", and 5 of 50 did the same in stage 2. **v5 forbids it in the
+    prompt, and nothing checks it here.** A degree guard was built and removed
+    on 2026-09-17: it rejects text that states no falsehood, which costs a
+    retry and a summary for a wording preference. Pinned so that re-adding the
+    guard is a decision rather than an accident."""
     payload = payload_for(ROW_5_DRIVERS, probability=0.3)
     assert payload["factors"][1]["vs_other_customers"] == "lower than most customers"
     output = reply(
@@ -807,8 +814,9 @@ def test_an_overstated_degree_is_not_rejected():
 
 
 def test_a_hedged_guess_is_not_rejected(payload):
-    """No speculation guard, for the same reason: v3's prompt doesn't forbid
-    it. Pinned so re-adding one is a decision, not an accident."""
+    """No speculation guard, for the same reason. **v5's prompt forbids
+    guessing why a factor matters; the guards still accept it.** Pinned so
+    re-adding one is a decision, not an accident."""
     output = reply(summary="Their month-to-month contract may indicate they are "
                            "shopping around.")
     assert verdict(output, payload) is None
@@ -1143,7 +1151,7 @@ def test_render_includes_the_structured_output(explanation):
     assert "risk level: high" in text
     assert "- contract (raises risk)" in text
     assert "month-to-month contract" in text
-    assert "explanation_v3" in text
+    assert "explanation_v5" in text
 
 
 def test_render_reports_a_missing_narrative_with_its_reason(explanation):
@@ -1260,3 +1268,242 @@ def test_the_cli_prints_only_the_chosen_style(monkeypatch, capsys):
     assert "--- config.DUMMY_CUSTOMER" in out
     assert "- contract type: Month-to-month (raises risk)" in out
     assert "EXPLANATION --" not in out
+
+
+# ==========================================================================
+# 11. --save: keeping a paid batch
+# ==========================================================================
+
+def _cli(monkeypatch, responses, *args):
+    """Run main() with a scripted fake model, Langfuse off and the cache off.
+
+    The CLI caches by default; these tests are about saving, so they opt out
+    rather than measuring a cache by accident. The cache's own CLI behaviour is
+    tested in tests/test_narration_cache.py.
+    """
+    args = ("--no-cache",) + args
+    client = FakeLLM(responses)
+    monkeypatch.setattr(narrate, "OpenAIClient", lambda: client)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    return narrate.main(list(args)), client
+
+
+def test_save_writes_one_entry_per_customer(monkeypatch, tmp_path, capsys):
+    target = tmp_path / "run.json"
+    code, _ = _cli(monkeypatch, [GOOD], "--dummy", "--quiet", "--save", str(target))
+    assert code == 0
+    saved = json.loads(target.read_text())
+    assert len(saved) == 1
+    assert saved[0]["narrative"] == GOOD_SUMMARY
+    # The keys LLMcalls.ipynb reads.
+    for key in ("payload", "attempts", "structured", "prompt_version", "model"):
+        assert key in saved[0]
+
+
+def test_save_labels_each_result_with_its_customer(monkeypatch, tmp_path):
+    target = tmp_path / "run.json"
+    _cli(monkeypatch, [GOOD], "--dummy", "--quiet", "--save", str(target))
+    assert json.loads(target.read_text())[0]["case"] == "config.DUMMY_CUSTOMER"
+
+
+def test_save_refuses_an_existing_file_before_calling_the_api(monkeypatch, tmp_path, capsys):
+    """The check that matters: overwriting a saved run destroys a measurement
+    that cost money, and a batch that dies at the end would have to be paid
+    for twice. The fake is scripted with nothing, so any call would raise."""
+    target = tmp_path / "run.json"
+    target.write_text("[]")
+    code, client = _cli(monkeypatch, [], "--dummy", "--quiet", "--save", str(target))
+    assert code == 2
+    assert client.calls == []
+    assert target.read_text() == "[]"
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_a_partial_batch_is_still_saved(monkeypatch, tmp_path):
+    """One customer's call raising must not discard the ones already paid
+    for. Row 0 is answered; every later row's call raises."""
+    target = tmp_path / "run.json"
+    csv = narrate.REPO_ROOT / "simulated_new_customers.csv"
+    row_0 = reply(
+        risk_level="high", reasons=(("contract", "raises risk"),),
+        summary="Their month-to-month contract drives their risk.",
+    )
+    code, _ = _cli(
+        monkeypatch, [row_0, RuntimeError("boom")],
+        "--csv", str(csv), "--all", "--quiet", "--save", str(target),
+    )
+    assert code == 0
+    saved = json.loads(target.read_text())
+    assert len(saved) == 1 and saved[0]["case"].endswith("row 0")
+
+
+def test_without_save_nothing_is_written(monkeypatch, tmp_path):
+    target = tmp_path / "run.json"
+    _cli(monkeypatch, [GOOD], "--dummy", "--quiet")
+    assert not target.exists()
+
+
+# ==========================================================================
+# 12. The cache, through narrate()
+# ==========================================================================
+
+@pytest.fixture
+def cache(tmp_path):
+    cache = narration_cache.from_env(str(tmp_path / "narration.sqlite3"))
+    yield cache
+    cache.close()
+
+
+def test_without_a_cache_every_call_reaches_the_model(explanation):
+    """The library default. A measurement run must meet the real model."""
+    client = FakeLLM([GOOD, GOOD])
+    first = narrate.narrate(explanation, client=client)
+    second = narrate.narrate(explanation, client=client)
+    assert len(client.calls) == 2
+    assert first["cache_hit"] is False and second["cache_hit"] is False
+
+
+def test_an_identical_second_request_is_served_from_the_cache(explanation, cache):
+    client = FakeLLM([GOOD])  # one response only: a second call would raise
+    first = narrate.narrate(explanation, client=client, cache=cache)
+    second = narrate.narrate(explanation, client=client, cache=cache)
+    assert len(client.calls) == 1
+    assert second["narrative"] == first["narrative"]
+    assert second["structured"] == first["structured"]
+
+
+def test_a_cached_result_says_so_and_records_no_attempts(explanation, cache):
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    second = narrate.narrate(explanation, client=FakeLLM([]), cache=cache)
+    assert second["cache_hit"] is True
+    assert second["attempts"] == [], "no call was made, so there is nothing to record"
+    assert second["cached_attempts"] == 1
+    assert second["narrative_available"] is True
+    assert second["final_rejection_type"] is None
+
+
+def test_a_cached_result_keeps_the_whole_attribution(explanation, cache):
+    """The drivers are the part that survives everything; a cache hit must not
+    return less than a live call."""
+    live = narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    cached = narrate.narrate(explanation, client=FakeLLM([]), cache=cache)
+    for key in ("drivers", "contributions", "churn_probability", "payload",
+                "prompt_version", "model", "seed", "protected_drivers_omitted"):
+        assert cached[key] == live[key], key
+
+
+def test_a_different_customer_is_not_served_the_first_ones_answer(explanation, cache):
+    other = make_explanation([("contract", "Two year", -0.9), ("tenure", 70, -0.3)],
+                             probability=0.05)
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    low = reply(risk_level="low", reasons=(("contract", "lowers risk"),),
+                summary="Their two-year contract holds them.")
+    client = FakeLLM([low])
+    result = narrate.narrate(other, client=client, cache=cache)
+    assert len(client.calls) == 1 and result["cache_hit"] is False
+
+
+def test_a_rejected_narration_is_not_cached(explanation, cache):
+    narrate.narrate(explanation, client=FakeLLM([BAD_PROTECTED, BAD_PROTECTED]),
+                    cache=cache)
+    client = FakeLLM([GOOD])
+    result = narrate.narrate(explanation, client=client, cache=cache)
+    assert len(client.calls) == 1, "the next caller deserves a real attempt"
+    assert result["narrative_available"]
+
+
+def test_a_changed_seed_misses_the_cache(explanation, cache):
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    client = FakeLLM([GOOD])
+    narrate.narrate(explanation, client=client, cache=cache, seed=7)
+    assert len(client.calls) == 1
+
+
+class HostileCache:
+    """Everything it is asked to do, it refuses."""
+
+    enabled = True
+
+    def get(self, *_, **__):
+        raise RuntimeError("get exploded")
+
+    def put(self, *_, **__):
+        raise RuntimeError("put exploded")
+
+
+def test_a_cache_that_raises_cannot_change_a_narration(explanation):
+    """The llm_tracing rule, applied to the cache: optional comfort must never
+    cost an explanation."""
+    plain = narrate.narrate(explanation, client=FakeLLM([GOOD]))
+    with pytest.warns(RuntimeWarning, match="narration cache failed"):
+        hostile = narrate.narrate(explanation, client=FakeLLM([GOOD]),
+                                  cache=HostileCache())
+    assert hostile["narrative"] == plain["narrative"]
+    assert hostile["structured"] == plain["structured"]
+    assert hostile["cache_hit"] is False
+
+
+def test_rates_count_live_results_only(explanation, cache):
+    """Two customers, one of them answered twice: the rates describe the two
+    calls that happened, and the hit is reported on its own."""
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    results = [
+        narrate.narrate(explanation, client=FakeLLM([]), cache=cache),
+        narrate.narrate(explanation, client=FakeLLM([BAD_UNLISTED, GOOD]), cache=None),
+    ]
+    rates = narrate.rejection_rates(results)
+    assert rates["n"] == 1
+    assert rates["cached"] == 1
+    assert rates["first_attempt_rejection_rate"] == 1.0
+    assert rates["final_rejection_rate"] == 0.0
+
+
+def test_rates_of_an_all_cached_batch_are_none_rather_than_zero(explanation, cache):
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    cached = [narrate.narrate(explanation, client=FakeLLM([]), cache=cache)]
+    rates = narrate.rejection_rates(cached)
+    assert rates["n"] == 0 and rates["cached"] == 1
+    assert rates["first_attempt_rejection_rate"] is None
+
+
+def test_render_says_when_an_explanation_came_from_the_cache(explanation, cache):
+    narrate.narrate(explanation, client=FakeLLM([GOOD]), cache=cache)
+    cached = narrate.narrate(explanation, client=FakeLLM([]), cache=cache)
+    text = "\n".join(narrate.render(cached, "TEST"))
+    assert "from cache" in text
+    assert "1 attempt(s) when first made" in text
+
+
+def test_render_rates_mentions_cache_hits():
+    rates = {"n": 2, "cached": 3, "retries_issued": 0,
+             "first_attempt_rejection_rate": 0.0,
+             "second_attempt_rejection_rate": None, "final_rejection_rate": 0.0,
+             "first_attempt_by_type": {}, "second_attempt_by_type": {}}
+    assert "3 more served from cache" in "\n".join(narrate.render_rates(rates))
+
+
+def test_the_cli_caches_by_default(monkeypatch, tmp_path, capsys):
+    """Opposite default from the library: a person running the same customer
+    twice should not pay twice."""
+    db = str(tmp_path / "cli.sqlite3")
+    client = FakeLLM([GOOD])  # one response for two runs
+    monkeypatch.setattr(narrate, "OpenAIClient", lambda: client)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert narrate.main(["--dummy", "--quiet", "--cache-path", db]) == 0
+    assert narrate.main(["--dummy", "--quiet", "--cache-path", db]) == 0
+    assert len(client.calls) == 1
+    assert "1 of 1 served from cache" in capsys.readouterr().err
+
+
+def test_the_cli_can_be_told_not_to_cache(monkeypatch, tmp_path):
+    db = str(tmp_path / "cli.sqlite3")
+    client = FakeLLM([GOOD, GOOD])
+    monkeypatch.setattr(narrate, "OpenAIClient", lambda: client)
+    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    narrate.main(["--dummy", "--quiet", "--no-cache", "--cache-path", db])
+    narrate.main(["--dummy", "--quiet", "--no-cache", "--cache-path", db])
+    assert len(client.calls) == 2
+    assert not Path(db).exists(), "--no-cache must not even open the database"

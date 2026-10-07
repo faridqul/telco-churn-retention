@@ -224,7 +224,7 @@ def test_the_trace_carries_session_tags_and_labels(traced):
     narrate.narrate(make_explanation(), client=FakeLLM([GOOD]), tracer=tracer, trace_label="row 3")
     attrs = _attrs(spans()["narrate"])
     assert attrs["session.id"] == "test-session"
-    assert tuple(attrs["langfuse.trace.tags"]) == ("explanation_v3", "gpt-4o-mini")
+    assert tuple(attrs["langfuse.trace.tags"]) == ("explanation_v5", "gpt-4o-mini")
     assert attrs["langfuse.trace.metadata.customer"] == "row 3"
     assert attrs["langfuse.trace.metadata.risk_level"] == "high"
 
