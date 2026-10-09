@@ -323,6 +323,41 @@ def test_float_values_are_rounded_for_the_model():
     assert factor["value"] == 84.75
 
 
+@pytest.mark.parametrize("field, missing", [
+    # A blank totalcharges with tenure > 0 leaves the average undefined.
+    ("average_monthly_charges", float("nan")),
+    ("totalcharges", None),
+    ("monthlycharges", float("inf")),
+], ids=["nan", "none", "inf"])
+def test_a_missing_value_is_neither_stated_nor_compared(field, missing):
+    """Regression: NaN fails every `z >= ...` test in compare_to_typical(),
+    so it used to fall through to "similar to most customers" -- a comparison
+    of a number the customer does not have -- and `"value": NaN` was sent
+    alongside it. The name and direction are still true, and are all that is
+    left."""
+    factor = payload_for([(field, missing, 0.3)])["factors"][0]
+    assert factor == {
+        "name": explain.FIELD_LABELS[field], "field": field,
+        "direction": "raises risk",
+    }
+
+
+def test_a_payload_with_a_missing_value_is_strict_json():
+    """What reaches the model, and what /explain returns, must serialise
+    without Python's NaN extension."""
+    payload = payload_for([("average_monthly_charges", float("nan"), 0.3),
+                           ("contract", "Month-to-month", 0.2)])
+    json.dumps(payload, allow_nan=False)
+    assert narrate.allowed_numbers(payload) == []
+
+
+def test_a_present_zero_is_still_a_value():
+    """Zero is falsy but not missing: a customer in their first month."""
+    factor = payload_for([("tenure", 0, 0.4)])["factors"][0]
+    assert factor["value"] == 0
+    assert factor["vs_other_customers"] == "much lower than most customers"
+
+
 def test_the_real_dummy_customer_payload():
     """End to end from the shipped artifact: the reference points reach the
     payload, and no protected field is reported as withheld when none
@@ -1139,6 +1174,25 @@ def test_the_real_client_sends_the_schema_and_the_token_cap():
     assert completion.text == GOOD
     assert completion.finish_reason == "stop"
     assert (completion.prompt_tokens, completion.completion_tokens) == (400, 70)
+
+
+def test_the_real_client_leaves_the_sdks_timeout_alone_unless_asked():
+    """The CLI and every saved measurement ran on the SDK's defaults, so the
+    default here must still be exactly that. api.py is the caller that asks."""
+    if importlib.util.find_spec("openai") is None:
+        pytest.skip("openai is not installed")
+    from openai import OpenAI
+
+    untouched = OpenAI(api_key="sk-not-a-real-key")
+    default = narrate.OpenAIClient(api_key="sk-not-a-real-key")._client
+    assert default.timeout == untouched.timeout
+    assert default.max_retries == untouched.max_retries
+
+    bounded = narrate.OpenAIClient(
+        api_key="sk-not-a-real-key", timeout=15.0, max_retries=0,
+    )._client
+    assert bounded.timeout == 15.0
+    assert bounded.max_retries == 0
 
 
 # ==========================================================================

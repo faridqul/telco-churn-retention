@@ -6544,3 +6544,291 @@ deselected. End to end against the real cache: `--stats` shows
 `explanation_v5 / gpt-4o-mini  settling  0.0h` and the three numbers, and
 `narrate.py --dummy` was served from cache (no API call, no spend). **Not
 committed.**
+
+## 2026-10-09 — `POST /explain`: the explanation layer gets an HTTP endpoint
+
+**Files touched:**
+- `api.py`
+- `tests/test_explain_api.py` (new)
+- `tests/test_api.py`
+
+**What changed:** `api.py` has a second endpoint. `POST /explain` takes exactly
+the body `/predict` takes — the same `Customer` model, not a copy — and returns
+`/predict`'s three fields followed by the reasons:
+
+- `risk_level` — low / moderate / high / very high, the same band the language
+  model is shown. Deterministic, always present.
+- `drivers` — the model's five strongest reasons, each with a field id, a
+  plain-English label, the customer's value, a worded comparison with other
+  customers where one exists, a direction, and the exact unrounded
+  contribution. Arithmetic, no language model, always present.
+- `explanation` — the language model's accepted answer (`risk_level`,
+  `reasons`, `summary`), or `null`.
+- `meta` — `status`, `detail`, `rejection_type`, `prompt_version`, `model`,
+  `cache_hit`, `attempts`, `protected_drivers_omitted`.
+
+`meta.status` is the field a caller branches on: `ok`, `rejected` (the model
+answered and both attempts were refused by a guard), `unavailable` (no call
+could be made: no API key, or the `openai` package is not installed) or `error`
+(the call was made and failed). **All four are a 200**, because the probability
+and the drivers are true in every one of them. Only two things are a 503: no
+model loaded, or a build that does not contain the explanation layer.
+
+`/health` gained two booleans beside `model_loaded`: `explain_available` (the
+layer is part of this build) and `narration_available` (a live call to the
+language model is possible).
+
+How it is put together, and why each choice was made:
+
+- **The decision comes from one function.** `/predict`'s body was moved into
+  `_score()`, which both endpoints call. `/explain` then compares the
+  explanation's own probability and decision against it with `==` and answers
+  500 rather than return reasons for a different number. `ExplainResponse`
+  subclasses `PredictionResponse`, so the first three fields are the same
+  class as well as the same values.
+- **The app's own model and threshold are handed to `explain_customer()`.**
+  Left to its defaults it loads a second copy of the pipeline and reads the
+  threshold from metadata, which would let `/explain` describe a decision
+  `/predict` did not make.
+- **`drivers` is `narrate.narration_payload(explanation, top_n=5)`**, the
+  function that already decides what a reader may see, called at five instead
+  of three. Protected attributes are removed and named in
+  `protected_drivers_omitted`, and their slots refilled. Because five is a
+  superset of three under the same filter, the language model's three factors
+  are always the first three drivers, so every `reasons[].field` can be looked
+  up in `drivers`.
+- **The explanation layer is an optional import.** The Docker image holds
+  `api.py`, `config.py`, `feature_engineering_telco.py` and `telco_model.py`
+  and none of `explain.py`, `narrate.py` or `narration_cache.py`. A plain
+  import would stop the container at startup, so the three are imported under
+  `try/except ImportError`; in the image `/explain` answers 503 with a message
+  saying so and `/predict` is untouched.
+- **The cache is opened per request.** The first version opened one cache at
+  startup, as originally described to the user. That is wrong here: the
+  handler runs in a worker thread, a `sqlite3` connection refuses to be used
+  from a thread other than the one that made it, and `narration_cache`
+  swallows its own errors by design — so every lookup failed silently and
+  every request became a paid call. Measured before the fix was kept: two
+  identical requests made two calls. Opening takes well under a millisecond.
+  It is the same file the CLI uses, so each fills the other.
+- **A process with no key still serves what is cached.** When no client can be
+  built the handler passes `narrate()` a stand-in that raises only when asked
+  to complete. `narrate()` reads the cache first, so a cached summary is
+  returned and only a miss becomes `unavailable`. Starting the API without the
+  key is therefore a mode that cannot spend anything.
+- **Whether a client can be built is decided once, at startup**, and printed.
+- **An upstream failure returns only the error's type to the caller.**
+  Provider error messages can quote part of the API key. The full message goes
+  to the server log as a `RuntimeWarning`.
+- **The OpenAI client gets a 15-second timeout and no SDK-level retries.** The
+  SDK defaults are a 600-second read timeout and two retries, which would hold
+  a browser's request for half an hour on one stalled call.
+
+Not done, deliberately: no `style`, `top_n`, `model` or `no_cache` parameter;
+no Langfuse tracing from the endpoint (the CLI still traces); no change to the
+`Dockerfile`, the frontend or the README. `frontend/index.html` still carries
+two comments saying `/explain` does not exist.
+
+`tests/test_explain_api.py` is 53 tests against the real committed pipeline
+(`DummyModel` has no preprocessor or booster to attribute) and a scripted
+`FakeLLM`. It pins `/explain` equal to `/predict` on all 50 simulated
+customers, the threshold and model being the app's, the 422s with no call
+made, each of the four statuses, the cache through the real route, protected
+attributes absent from both the response and what the model is sent, the 503s,
+`/health` in each state, and — in a subprocess — `api.py` importing and serving
+from a directory holding only the image's four modules.
+
+`tests/test_api.py`: the `/health` test now expects the four keys, and the
+shared fixture replaces `_make_llm_client` so `/health` answers the same on a
+machine with a key exported.
+
+**Why:** The agreed next step after the cache: an endpoint for the frontend
+card. The user chose backend first, a 200 with drivers when narration cannot
+run, and no Docker change.
+
+**Requested or incidental:** Requested. Three things go beyond the shape
+described to the user beforehand and are stated here so they are not mistaken
+for it: a top-level `risk_level`; `meta.status` and `meta.detail` (needed once
+"no summary" has four causes rather than one); and `explain_available` on
+`/health` (needed because the image cannot serve `/explain` at all).
+`drivers` also excludes protected attributes, which the sketch left unstated.
+
+**Verification status:** `uv run pytest -q`: 599 passed, 1 skipped, 10 live
+deselected (540 before). Five deliberate breakages of `api.py` were each
+caught by a test and reverted: threshold not passed, model not passed, the
+protected filter cut to three, the upstream message echoed, the import left
+unguarded. Run for real with `uvicorn` and `curl`, no key: `/health`,
+`/predict` at `0.7443000078201294`, `/explain` 200 in about 50 ms with
+`status: unavailable`, 422 on an unknown category. `docker build` and a run of
+the resulting container: healthy, `/predict` pinned, `/explain` 503,
+`explain_available: false`; the test image was then removed. **No live call
+was made and nothing was spent** — `status: ok` has only been seen with
+`FakeLLM`. Not committed; on branch `feat/explain-endpoint`.
+
+## 2026-10-09 — narrate.py: a missing value is no longer compared with other customers
+
+**Files touched:**
+- `narrate.py`
+- `tests/test_narrate.py`
+
+**What changed:** `_factor()` now returns a factor with only its name, field
+and direction when the customer's value is `None`, `NaN` or infinite. Before,
+a `NaN` was sent to the language model as `"value": NaN` together with
+`"vs_other_customers": "similar to most customers"`.
+
+The cause: `compare_to_typical()` tests `z >= 1`, `z >= 0.25`, `z <= -1`,
+`z <= -0.25` in turn, and every comparison with `NaN` is false, so a missing
+number fell through to the last line. It is reachable from an ordinary input:
+`totalcharges` may be blank, and with `tenure > 0` that leaves
+`average_monthly_charges` undefined.
+
+Five tests: the three kinds of missing value each produce a bare factor; such
+a payload serialises as strict JSON and licenses no numbers; and a real zero
+(`tenure = 0`) is still stated and compared, since zero is falsy but present.
+
+**Why:** Found while building `/explain`, which would have returned the false
+comparison in `drivers` and failed to serialise the `NaN`.
+
+**Requested or incidental:** **Incidental.** Not asked for. It changes what
+the language model is sent, but only for a customer with a missing value among
+their top three factors. None of the 50 simulated customers is one, so no
+saved run, measurement or cache key is affected, and the prompt is untouched.
+
+**Verification status:** Reproduced first (`compare_to_typical(nan, …)`
+returned `'similar to most customers'`), then fixed; the tests above pass in
+the full run. Not committed.
+
+## 2026-10-09 — narrate.OpenAIClient accepts a timeout and a retry count
+
+**Files touched:**
+- `narrate.py`
+- `tests/test_narrate.py`
+
+**What changed:** `OpenAIClient.__init__` takes two optional arguments,
+`timeout` and `max_retries`, passed to the SDK only when given. With neither,
+the client is built exactly as before, on the SDK's own defaults.
+
+**Why:** `/explain` needs both, and the only other way to set them was for
+`api.py` to reach into the client's private attribute.
+
+**Requested or incidental:** **Incidental**, in support of the requested
+endpoint. The CLI passes neither, so it and every saved measurement are
+unchanged.
+
+**Verification status:** One test, skipped where `openai` is not installed:
+the default client's timeout and retry count equal an untouched SDK client's,
+and `timeout=15.0, max_retries=0` reach the SDK object. Passes. Not committed.
+
+## 2026-10-09 — tests: no test outside `live` can see the API key
+
+**Files touched:**
+- `tests/conftest.py`
+
+**What changed:** A new autouse fixture removes `OPENAI_API_KEY` from the
+environment for every test that is not marked `live`.
+
+**Why:** `api.py` now builds a real language-model client at startup when the
+key is present, and several test modules start the app for real
+(`tests/test_input_validation.py` among them). Deselecting the live tests
+stops *them* spending money on a machine with the key exported; nothing
+stopped any other test that reached `/explain`. The project's cap on live
+spend is a hard one, so this is closed off rather than left to care.
+
+**Requested or incidental:** **Incidental.** Not asked for.
+
+**Verification status:** With `OPENAI_API_KEY` set to a fake value, the three
+modules that start the app passed (104 tests) and built no client. The 10 live
+tests are still collected by `-m live`. Not committed.
+
+## 2026-10-09 — docs/DEMO.md: `/explain`
+
+**Files touched:**
+- `docs/DEMO.md`
+
+**What changed:** A new section 5c shows `/explain`: the `curl`, a trimmed
+response, what to point out, how to restart with the key for a written
+summary, a table of the four `meta.status` values, and the note that the
+Docker image answers 503. Section 1's `/health` output now shows the four
+keys. Section 2 no longer says the endpoint is not built — it says the card is
+not wired to it. Section 7's test count is 599 (it still said 464).
+
+**Why:** The runbook is where the project's commands live, and `/health`'s
+documented output was no longer what the service returns.
+
+**Requested or incidental:** **Incidental**, in support of the requested
+endpoint.
+
+**Verification status:** The key-less `curl` and its output were run on
+2026-10-09 and the JSON is pasted from that run. The restart with a key is
+marked **costs money** and was **not run**: the two-second and cache-hit
+claims there come from the CLI's behaviour and the `FakeLLM` tests, not from a
+live call through the endpoint. Not committed.
+
+## 2026-10-09 — CLAUDE.md: the `/explain` section
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** The `api.py` layout row mentions `/explain`; a row was added
+for `tests/test_explain_api.py`; a new `/explain` section states the rules
+that are easy to break without noticing (the optional import, the per-request
+cache connection, the shared `_score()` plus the equality check, the app's own
+model and threshold, `drivers` coming from `narration_payload()` at five, the
+key-less cache mode, the client's timeout, no tracing, the test-suite key
+guard); and the Docker section says the explanation layer is not in the image
+and what adding it would take.
+
+Left alone: the "166 tests" and "all 9 test files" figures in the layout table
+are still stale (599 tests, 16 test files).
+
+**Why:** Each of those rules was either learned the hard way during this work
+or would fail silently if undone.
+
+**Requested or incidental:** **Incidental** — documentation of requested
+work.
+
+**Verification status:** Read back after editing; every claim in the new
+section corresponds to a test or to the Docker run recorded above. Not
+committed.
+
+## 2026-10-09 — `/explain` checked live: one paid call, accepted, then served from cache
+
+**Files touched:**
+- `CHANGELOG.md` (this entry only; no code changed)
+
+**What changed:** Nothing in the code. This records the live check the
+previous entry said had not been made.
+
+The API was started with the key (`uv run --env-file .env uvicorn api:app`,
+on a spare port so the user's own server on 8000 was left alone). `/health`
+reported `narration_available: true`. Three requests:
+
+| request | time | `status` | `cache_hit` | attempts |
+|---|---|---|---|---|
+| the demo customer (0.7443, very high) | 0.06 s | `ok` | **true** | 0 |
+| a long-tenure, two-year-contract customer (0.0195, low) | **2.46 s** | `ok` | false | **1** |
+| the same customer again | 0.16 s | `ok` | **true** | 0 |
+
+The demo customer was already cached, because the user had called the
+endpoint themselves a few minutes earlier — which is the shared cache doing
+what it is for. The second customer was the live call: accepted on the first
+attempt, with `/predict` returning the identical probability and decision for
+the same body. Its summary: "This customer has a two-year contract, which
+lowers their risk of leaving. They also have a much higher overall commitment
+and have been a customer for 61 months, both of which further reduce their
+risk." The three reasons are the first three drivers, in order, and "much
+higher" matches the comparison the model was given.
+
+So the two claims `docs/DEMO.md` section 5c made without a live run — about two
+seconds for a first request, and an instant cache hit for the second — are now
+observed through the endpoint.
+
+**Why:** Requested: "run the live checks".
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Run on 2026-10-09. **One paid call, about $0.0002**;
+cumulative live spend is still about $0.024 of the $0.50 cap. Only `ok` and
+`unavailable` have been seen live; `rejected` and `error` are covered by the
+`FakeLLM` tests only. `uv run pytest -q` afterwards: 599 passed, 1 skipped, 10
+deselected.

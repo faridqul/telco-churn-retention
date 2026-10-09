@@ -4,7 +4,8 @@ Every command needed to show this project working, in the order you would
 show it. Copy-paste from a clean clone.
 
 Each command below was run on 2026-10-06 and its output checked, except the
-three marked **costs money** (a real API call) and the two marked **slow**.
+ones marked **costs money** (a real API call) and the two marked **slow**.
+Section 5c was added and run on 2026-10-09.
 
 Three things to know before you start:
 
@@ -54,8 +55,13 @@ Then, in another terminal:
 curl -s http://127.0.0.1:8000/health
 ```
 ```json
-{"status":"ok","model_loaded":true}
+{"status":"ok","model_loaded":true,"explain_available":true,"narration_available":false}
 ```
+
+`explain_available` and `narration_available` describe `/explain`
+([section 5c](#5c-the-explanation-over-http--explain)). Started this way, with
+no API key, the second is `false`: reasons are served, written summaries are
+not.
 
 ```bash
 curl -s -X POST http://127.0.0.1:8000/predict \
@@ -99,8 +105,9 @@ Open <http://localhost:5500>. The "API base URL" field at the top defaults to
 `http://localhost:8000`, which is where step 1 is listening. The API allows
 any origin, so the page works from any port.
 
-The page has a card reading "AI explanation — coming soon": the `/explain`
-endpoint is not built yet.
+The page has a card reading "AI explanation — coming soon". The `/explain`
+endpoint behind it exists ([section 5c](#5c-the-explanation-over-http--explain));
+the card is not wired to it yet.
 
 ---
 
@@ -207,6 +214,96 @@ uv run python narration_cache.py --stats
 **Measuring a prompt? Pass `--no-cache`.** A rejection rate computed over
 cached answers is not a measurement of the model.
 
+## 5c. The explanation over HTTP — `/explain`
+
+`/explain` takes exactly the body `/predict` takes and returns `/predict`'s
+three fields plus the reasons. Start the API as in step 1 — no key needed for
+this first part — and send the same customer to the other path:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/explain \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gender": "Female", "seniorcitizen": 0, "partner": "Yes", "dependents": "No",
+    "tenure": 3, "phoneservice": "Yes", "multiplelines": "No",
+    "internetservice": "Fiber optic", "onlinesecurity": "No", "onlinebackup": "No",
+    "deviceprotection": "No", "techsupport": "No", "streamingtv": "Yes",
+    "streamingmovies": "Yes", "contract": "Month-to-month", "paperlessbilling": "Yes",
+    "paymentmethod": "Electronic check", "monthlycharges": 85.5, "totalcharges": 256.5
+  }' | python3 -m json.tool
+```
+
+Trimmed to one driver, the answer is:
+
+```json
+{
+    "churn_probability": 0.7443000078201294,
+    "target_for_retention": true,
+    "threshold_used": 0.4,
+    "risk_level": "very high",
+    "drivers": [
+        {
+            "field": "tenure",
+            "label": "months as a customer",
+            "value": 3,
+            "vs_other_customers": "much lower than most customers",
+            "direction": "raises risk",
+            "contribution": 0.22714783251285553
+        }
+    ],
+    "explanation": null,
+    "meta": {
+        "status": "unavailable",
+        "detail": "OPENAI_API_KEY is not set. Export it; it is never read from a file in the repo and never has a default.",
+        "rejection_type": null,
+        "prompt_version": "explanation_v5",
+        "model": "gpt-4o-mini",
+        "cache_hit": false,
+        "attempts": 0,
+        "protected_drivers_omitted": []
+    }
+}
+```
+
+Three things to say out loud:
+
+- **The first three fields are `/predict`'s**, the same number to the last
+  digit. The two endpoints cannot disagree about a customer.
+- **`drivers` is the model's own arithmetic**, five strongest first. It needed
+  no key, no network and about 50 ms.
+- **`explanation` is `null` and that is a 200, not an error.** `meta.status`
+  says why: `unavailable` here, because no key reached the process.
+
+Now the written summary — **costs money**, about $0.0002 for each customer not
+seen before. Stop the API and restart it with the key:
+
+```bash
+uv run --env-file .env uvicorn api:app --port 8000
+```
+
+The startup log now says `/explain is on.` and `/health` reports
+`"narration_available":true`. Send the same `curl` twice. The first takes
+about two seconds and returns `"status": "ok"` with an `explanation` holding
+`risk_level`, `reasons` and `summary`; the second is instant and reports
+`"cache_hit": true`. It is the same cache as step 5b, so anything `narrate.py`
+already paid for is free here, and the other way round.
+
+The four values of `meta.status`:
+
+| `status` | `explanation` | what happened |
+|---|---|---|
+| `ok` | present | written, and passed every check |
+| `rejected` | `null` | the model answered and every attempt was refused; `rejection_type` names the check |
+| `unavailable` | `null` | no call could be made — no key, or `uv sync --group llm` was not run |
+| `error` | `null` | the call was made and failed (network, rate limit) |
+
+A started API with no key still serves any summary already in the cache, so
+"leave the key out" doubles as a mode that cannot spend anything.
+
+The Docker image does not contain the explanation layer: there `/explain`
+answers 503 and `/health` reports `"explain_available":false`. `/predict` is
+unaffected.
+
 ## 6. Reading saved LLM runs (free, no API calls)
 
 ```bash
@@ -228,7 +325,7 @@ It never calls the API, so re-run it as often as you like.
 uv run pytest -q
 ```
 ```
-464 passed, 1 skipped, 10 deselected
+599 passed, 1 skipped, 10 deselected
 ```
 
 The 10 deselected are the live tests that cost money. They are excluded by

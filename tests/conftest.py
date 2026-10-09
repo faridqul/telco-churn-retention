@@ -25,6 +25,20 @@ def _cache_in_a_temp_file(tmp_path, monkeypatch):
         narration_cache, "DEFAULT_DB_PATH", str(tmp_path / "narration.sqlite3")
     )
 
+
+@pytest.fixture(autouse=True)
+def _no_api_key_outside_live_tests(request, monkeypatch):
+    """Only a test marked `live` may see OPENAI_API_KEY.
+
+    api.py builds a language-model client at startup when the key is present,
+    and several test modules start the app for real. Deselecting the live
+    tests keeps *them* from spending money on a machine that has the key
+    exported; this keeps every other test from being able to, however it
+    reaches /explain. A test that needs the missing-key path gets it for free.
+    """
+    if request.node.get_closest_marker("live") is None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
 DUMMY_CHURN_PROBABILITY = 0.8
 
 

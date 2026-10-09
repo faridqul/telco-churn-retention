@@ -137,6 +137,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -480,6 +481,13 @@ def _factor(driver: dict, reference: dict) -> dict:
         "field": field,
         "direction": "raises risk" if driver["contribution"] > 0 else "lowers risk",
     }
+    # A value the customer does not have can be neither stated nor compared.
+    # totalcharges may be blank, and average_monthly_charges is then NaN --
+    # which every `z >= ...` test below answers False, so the comparison fell
+    # through to "similar to most customers": a claim about a number that does
+    # not exist. The factor keeps its name and direction, which are still true.
+    if value is None or (isinstance(value, float) and not math.isfinite(value)):
+        return factor
     if field in _BINARY_FIELDS:
         factor["value"] = "yes" if value else "no"
         return factor
@@ -917,7 +925,10 @@ class OpenAIClient:
     dependency group rather than in the runtime set.
     """
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self, api_key: str | None = None, base_url: str | None = None,
+        timeout: float | None = None, max_retries: int | None = None,
+    ):
         try:
             from openai import OpenAI
         except ModuleNotFoundError as e:
@@ -935,6 +946,13 @@ class OpenAIClient:
         kwargs = {"api_key": key}
         if base_url:
             kwargs["base_url"] = base_url
+        # Left to the SDK unless asked: its defaults (a 600-second read
+        # timeout, two retries) suit a batch nobody is waiting on. api.py
+        # passes both, because a browser is.
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
         self._client = OpenAI(**kwargs)
 
     def complete(

@@ -38,6 +38,13 @@ def client(monkeypatch):
     monkeypatch.setattr(api_module, "load_threshold", lambda: 0.5)
     monkeypatch.setattr(api_module, "validate_feature_schema", lambda: None)
     monkeypatch.setattr(api_module, "validate_environment_versions", lambda: None)
+    # No language-model client, whatever the environment holds. Without this
+    # the startup would build a real one on any machine with OPENAI_API_KEY
+    # exported, and /health below would answer differently there. /explain
+    # has its own file, tests/test_explain_api.py.
+    monkeypatch.setattr(
+        api_module, "_make_llm_client", lambda: (None, "no client in this fixture"),
+    )
     with TestClient(api_module.app) as test_client:
         yield test_client
 
@@ -55,7 +62,16 @@ VALID_PAYLOAD = {
 def test_health_reports_model_loaded(client):
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "model_loaded": True}
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["model_loaded"] is True
+    # Exact, so a key added to /health has to be added here on purpose. The
+    # two below describe /explain; the Dockerfile's HEALTHCHECK reads only
+    # model_loaded and is unaffected by them.
+    assert set(body) == {
+        "status", "model_loaded", "explain_available", "narration_available",
+    }
+    assert body["narration_available"] is False
 
 
 def test_predict_valid_payload_returns_expected_shape(client):

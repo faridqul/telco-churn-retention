@@ -28,7 +28,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `feature_engineering_telco.py` | 6 derived features. Imported by the notebook, API, batch script, config, and 2 test files. **The single most load-bearing module.** Guards its own `.str` use — an all-blank `paymentmethod` degrades to `is_auto_pay=0` instead of raising (AUDIT.md M9). |
 | `campaign_profit.py` | The profit formula, once. `campaign_profit()`, `break_even_threshold()`, `profit_curve()`, `best_threshold()`. Imported by the notebook in 7 places; economics are keyword-only so `clv`/`cost` can't be swapped (AUDIT.md C11). |
 | `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. Missing/corrupt metadata is **fatal**; a bad value inside readable metadata **degrades**. |
-| `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. |
+| `api.py` | FastAPI. One customer in, one decision out. Pydantic-validated. `POST /predict` is the decision; `POST /explain` (2026-10-09) takes the same body and returns the same decision plus the model's five strongest drivers and, when a language model is reachable, a checked summary. See the `/explain` section below before changing either. |
 | `telco_model.py` | Batch scorer. CSV in, CSV out. Validates the frame via `config.validate_input_frame()` before scoring (AUDIT.md M1, fixed). |
 | `xgboost_churn_pipeline.pkl` + `model_metadata.json` | The artifact. Committed on purpose so a clone runs immediately. |
 | `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. Also runs as a `docker build` step. |
@@ -38,6 +38,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
+| `tests/test_explain_api.py` | `/explain`, against the **real** pipeline (`explain_customer()` needs the preprocessor and booster, so `DummyModel` cannot stand in) and a scripted `FakeLLM`. Pins `/explain` == `/predict` on all 50 simulated customers, and imports `api.py` from a directory holding only the image's four modules. |
 | `docs/AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. Cited throughout as "AUDIT.md M9" etc.; those citations mean this file. |
 | `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), and the local `AUDIT.md`. |
 | `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
@@ -319,6 +320,13 @@ images would erode.
   handling) default to `/data` **inside the image only** — the module defaults
   remain the repo-relative filenames. Mounting a host dir at `/data` shadows
   the sample CSV baked in; that's intended.
+- **The explanation layer is not in the image either** (`explain.py`,
+  `narrate.py`, `narration_cache.py`, `llm_tracing.py`, `prompts/`, the `llm`
+  group). `api.py` imports it optionally, so the container serves `/predict`
+  as before, `/explain` answers 503 and `/health` reports
+  `explain_available: false`. Verified by building and running the image on
+  2026-10-09. Adding it means those `COPY` lines, the `llm` group in the sync,
+  and pointing `NARRATION_DB` at `/data`, the only writable path.
 - **`campaign_profit.py` is deliberately not in the image.** Neither entrypoint
   imports it; the threshold its formula chose is already in
   `model_metadata.json`. If an endpoint ever needs `break_even_threshold()`,
@@ -361,6 +369,59 @@ images would erode.
   written — different scope — so it rebuilt cold. The *second* PR run restored
   what the first one wrote and dropped to 43s. Both scopes are warm from their
   own second run onward; merging is not required for that.
+
+## `/explain`
+
+`POST /explain` = `/predict` + `explain.explain_customer()` +
+`narrate.narrate()`. Same request body (`api.Customer`, unchanged), and
+`ExplainResponse` subclasses `PredictionResponse`, so the first three fields
+are `/predict`'s by construction. Then `risk_level` and `drivers` (arithmetic,
+always present), `explanation` (the language model's accepted answer, or
+`null`) and `meta`.
+
+- **`explanation: null` is a 200.** `meta.status` is `ok`, `rejected` (every
+  attempt refused by a guard), `unavailable` (no key, or no `openai`) or
+  `error` (the upstream call failed). The numbers are true in all four. Only a
+  missing model, or a build without the explanation layer, is a 503.
+- **The explanation layer is an optional import in `api.py`**, guarded by
+  `try/except ImportError`. The Docker image does not contain `explain.py`,
+  `narrate.py` or `narration_cache.py`; there `/explain` answers 503 and
+  `/predict` is untouched. Don't turn that into a plain import — it takes the
+  container down at startup. `tests/test_explain_api.py` runs `api.py` from a
+  directory laid out like the image to catch exactly that.
+- **`/explain` scores through the same `_score()` as `/predict`**, then checks
+  the explanation's probability and decision against it with `==` and returns
+  a 500 rather than reasons for a different number. Keep both halves: the
+  shared function makes the decisions equal, the check makes the reasons
+  belong to that decision.
+- **The app hands `explain_customer()` its own model and threshold.** Left to
+  its defaults it loads a second copy of the pipeline and re-reads the
+  threshold from metadata.
+- **`drivers` is `narrate.narration_payload(explanation, top_n=5)`**, not
+  `explain.py`'s raw list: protected attributes removed and named in
+  `meta.protected_drivers_omitted`, zero contributions dropped, values worded.
+  Five where the model is shown three, so the model's three factors are always
+  the first three drivers and every `reasons[].field` can be looked up in
+  `drivers`.
+- **The cache is opened per request, never once at startup.** The handler
+  runs in a worker thread; a `sqlite3` connection made in another thread
+  raises on first use, `narration_cache` swallows that by design, and every
+  request silently becomes a paid call. Measured: a shared connection made 2
+  calls for 2 identical requests. It is the same file the CLI uses.
+- **A process with no key still serves cached summaries**, because
+  `narrate()` reads the cache before it asks its client for anything
+  (`api._NoLiveClient` raises only on a miss). `/health`'s
+  `narration_available` therefore means "a live call is possible", not "a
+  summary will come back".
+- **The OpenAI client is built with a 15 s timeout and no SDK retries**
+  (`LLM_TIMEOUT_SECONDS`, `LLM_MAX_RETRIES`). The SDK defaults are 600 s and 2
+  retries. `narrate.OpenAIClient()` itself still defaults to the SDK's, so the
+  CLI and every saved measurement are unchanged.
+- **Not traced.** `/explain` does not pass a Langfuse tracer; only the CLI
+  does.
+- **No test can reach a real language model unless marked `live`:**
+  `tests/conftest.py` removes `OPENAI_API_KEY` from the environment for every
+  other test, because the app builds a client at startup when the key is set.
 
 ## CHANGELOG.md — mandatory, every session
 
