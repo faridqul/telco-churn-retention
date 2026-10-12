@@ -6832,3 +6832,457 @@ cumulative live spend is still about $0.024 of the $0.50 cap. Only `ok` and
 `unavailable` have been seen live; `rejected` and `error` are covered by the
 `FakeLLM` tests only. `uv run pytest -q` afterwards: 599 passed, 1 skipped, 10
 deselected.
+
+## 2026-10-09 — faithfulness.py: a harness that measures the explanation layer (offline part)
+
+**Files touched:**
+- `faithfulness.py` (new)
+- `prompts/judge_v1.txt` (new)
+- `tests/test_faithfulness.py` (new)
+
+**What changed:** Step 4 of the GenAI plan is built as far as it can go without
+spending money. Until now the only evidence about what gets *past* the guards
+was 50 summaries read by hand, and a problem seen 0 times in 50 can still be
+happening about 7% of the time.
+
+`faithfulness.py` has five parts:
+
+1. **A sample.** The held-out test set is rebuilt with
+   `fairness_analysis.build_test_split()` and verified with its
+   `verify_reconstruction()`, which refuses to continue unless the confusion
+   matrix matches the published one. The 1,405 test customers produce only
+   **528 distinct inputs** to the language model (very high 33, high 106,
+   moderate 142, low 247). The sample is 300 of those: all 33 very-high, the
+   rest in proportion, seeded — 133 low, 77 moderate, 57 high, 33 very high.
+2. **Six code checks** over an accepted answer, each a pure function reusing
+   `narrate.py`'s alias map and its clause-bounded window: `reasons_reordered`,
+   `summary_reordered`, `degree_overstated`, `speculation`, `weighing`,
+   `direction_contradicted`. Four more are reported and never gated, because
+   they are wording and not truth: says "risk level", the "which raises their
+   risk" refrain, a value left unstated, over 60 words.
+3. **A judge.** A second model answers five yes/no questions about the input
+   and the summary (`adds_fact`, `wrong_direction`, `overstated_size`,
+   `guesses_why`, `weighs_factors`). Every "found" must quote the words it
+   objects to, and the code verifies the quote is in the summary; a reply that
+   fails that is counted as unusable, never as "faithful". A calibration set
+   of 103 cases with known answers is built from the two hand-read runs: 7
+   real problems from v3, 48 clean summaries from v5, and 48 clean summaries
+   with one planted error each.
+4. **A resumable runner.** Each result is appended to a `.jsonl` as it
+   arrives, so an interrupted paid run resumes at the next customer; the
+   finished file is the format `narrate.py --save` writes and is never
+   overwritten. No cache.
+5. **A baseline and a gate.** `build_baseline()` writes a slim record per case
+   (payload, each attempt's text and verdict, the judge's verdict — no
+   customer row). `check_baseline()` returns every reason the baseline does
+   not vouch for today's code: a different prompt or model, fewer than 300
+   cases, first-attempt rejection over 5%, final rejection over 1%, any gated
+   finding over 2%, the judge calling over 3% unfaithful, over 5% unusable
+   judge replies, summaries with no verdict, or a missing file (a failure,
+   not a skip).
+
+**The checks are measurements, not guards.** Nothing in this module rejects an
+answer at run time. The degree and speculation guards the user removed in
+September are not back; the same things are now counted after the fact.
+
+**The limits were fixed before the 300-customer run exists**, from the
+50-customer result (2% first-attempt, 0 of 50 findings), so they cannot be
+fitted to it.
+
+**Calibration of the code checks against the two hand-read runs** (step 2 of
+the plan, done, free):
+
+| check | hand, v3 | code, v3 | hand, v5 | code, v5 |
+|---|---|---|---|---|
+| reasons reordered | 6 | **6** | 0 | **0** |
+| degree overstated | 5 | **5** | 0 | **0** |
+| speculation | 2 | **2** | 0 | **0** |
+| weighing | 2 | **4** | 0 | **0** |
+| direction contradicted | 0 | **0** | 0 | **0** |
+| says "risk level" | 15 | **15** | 1 | **1** |
+
+The one difference was read case by case and all four are genuine: the same
+"significantly lowers their risk" sentence was written for two customers (rows
+11 and 34), row 17 is the "do not outweigh", and row 19 — "the other factors
+significantly lower their risk" — is a third instance the hand read missed.
+`summary_reordered` has no hand count; it finds 9 on v3, the 6 above plus
+three (rows 13, 16, 29) whose `reasons` were in order while the sentence named
+tenure before overall commitment.
+
+**A known miss, found during calibration and left in:** rows 13 and 16 of v3
+say "a much shorter tenure and overall commitment", which overstates the
+commitment by sharing an adjective across "and". The degree check does not
+cross a conjunction, on purpose — crossing it would pin "much" on the wrong
+factor far more often than it would catch this. The hand read did not count
+these either. This is the kind of case the judge is for.
+
+A first version of the "strength" pattern read "a much lower overall
+commitment" as an adverb on a verb and reported 10 weighing findings; it now
+requires the verb's object ("...their risk").
+
+**Why:** Requested and planned with the user on 2026-10-09: 300 distinct
+inputs, code checks plus a second model as judge, and the measured answers
+committed so CI can re-check them.
+
+**Requested or incidental:** Requested. One addition to the approved plan,
+stated so it is not mistaken for it: a limit on unusable judge replies (5%).
+Without it, a judge that failed on every case would pass the "unfaithful"
+limit with nothing judged.
+
+**Verification status:** `uv run pytest -q`: 760 passed, 1 skipped, 10 live
+deselected (599 before; 161 new). Eight deliberate breakages of the module
+were each caught by a test and reverted; the one that survived at first
+(ignoring "both of which") got a test and was then caught. `faithfulness.py
+sample` was run for real: 528 distinct inputs, 300 sampled, written to
+`outputs/harness_customers.csv` (gitignored). `calibrate --dry-run` built the
+103 cases. **No API call has been made and nothing has been spent.** Not done
+yet: the judge calibration, the 300-customer run, judging it, the baseline,
+the report, and the gate test — which is deliberately not in the suite until
+a baseline exists, because it must fail when the file is missing. Not
+committed; on branch `feat/faithfulness-harness`.
+
+## 2026-10-09 — CLAUDE.md: rows for faithfulness.py and its tests
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** Two rows in the layout table: `faithfulness.py` (what it
+measures, its subcommands, that its checks must never be wired into the
+guards, and that it is **in progress** — no baseline exists yet) and
+`tests/test_faithfulness.py` (including why it has an autouse fixture that
+reuses results for identical cases).
+
+**Why:** A 1,460-line module that a later session finds with no mention here
+would be re-derived from scratch.
+
+**Requested or incidental:** Incidental — documentation of requested work.
+
+**Verification status:** Read back after editing. The "in progress" wording
+has to be removed when the baseline is committed. Not committed.
+
+## 2026-10-09 — The judge is gpt-6-luna, and it is a one-off double check, not part of the gate
+
+**Files touched:**
+- `faithfulness.py`
+- `tests/test_faithfulness.py`
+
+**What changed:** Two decisions by the user, both made after the offline part
+was built.
+
+**1. The judge's model.** The user did not want to "clean up after a dumb
+judge" and, shown today's prices, chose `gpt-6-luna` ($0.10 / $0.50 per million
+tokens) over the planned `gpt-4o-mini`. It is two generations newer than the
+model that writes the summaries and is not the same model, which removes the
+"a model is lenient about its own style" concern. The top tier (`gpt-6.1-sol`)
+was priced at about $1.30 for the whole harness and was not chosen.
+
+Two probe calls (about $0.0005) showed what the model accepts:
+- It **refuses `temperature=0.0`** ("Only the default (1) value is
+  supported"). So `JudgeClient`, a subclass of `narrate.OpenAIClient`, accepts
+  the argument and does not forward it. The seed is accepted and is sent.
+- It is a **reasoning model** and bills its thinking as output: about 1,100
+  tokens in and 200-340 out per verdict, of which roughly 120-260 are
+  thinking. `JUDGE_REASONING_EFFORT = "low"`; `JUDGE_MAX_TOKENS` went from 300
+  to 2000, because the thinking counts against the cap and a tight cap would
+  cut the reply off mid-JSON. Each record now keeps `reasoning_tokens` and
+  `finish_reason`.
+
+Consequence, stated plainly: **the judge is not exactly repeatable.** The same
+clean summary was passed in one calibration run and flagged in the next. Its
+verdicts are saved and never re-asked, so nothing downstream depends on it
+being repeatable.
+
+**2. The judge is not part of the project.** The user: "this judge is not a
+part of the project. it is a double check explicitly for the 300 customers we
+have." It was never in the request path — `narrate()` and `/explain` do not
+call it — but the gate as first built *did* depend on it: it required a
+verdict for every summary and failed above 3% "unfaithful". That made the
+judge a standing component, and would have forced a re-judging on every
+prompt change. Removed:
+- `check_baseline()` no longer looks at the judge's verdicts at all.
+- `current_meta()` holds only the narrating side (prompt, its hash, model,
+  temperature, seed). The judge's settings moved to `judge_meta()`, which is
+  written into the baseline as a record and never compared.
+- `MAX_JUDGE_UNFAITHFUL` and `MAX_JUDGE_ERROR` are gone. The report shows the
+  judge's numbers under "THE JUDGE'S DOUBLE CHECK ... (a second opinion; not
+  gated)", with no limit beside them.
+- `build_baseline()` and the `baseline` command work with no judging at all.
+
+Tests: the three that asserted the judge could fail the gate now assert the
+opposite — 300 "unfaithful" verdicts, 300 unusable replies, no verdicts, a
+different judge model and a deleted judge prompt each still pass. A new test
+parses `api.py`, `narrate.py`, `explain.py` and `narration_cache.py` and fails
+if any of them imports the harness. A recorder test pins the request
+`JudgeClient` sends: no temperature, the seed, the schema, the cap, the
+effort.
+
+**Why:** Requested, in two messages.
+
+**Requested or incidental:** Requested. The removal from the gate is my
+reading of "not a part of the project"; the user was told so and can ask for
+it back. It reverses item 4 of the approved plan's gate and withdraws the 5%
+unusable-reply limit added in the previous entry.
+
+**Verification status:** `uv run pytest -q`: 766 passed, 1 skipped, 10 live
+deselected. Not committed.
+
+## 2026-10-09 — Judge calibrated on 103 cases with known answers; prompt v2 passes
+
+**Files touched:**
+- `prompts/judge_v1.txt` (one clarification before any saved run; then kept unchanged)
+- `prompts/judge_v2.txt` (new)
+- `faithfulness.py`
+- `tests/test_faithfulness.py`
+
+**What changed:** The judge was scored before being used, as planned. The 103
+cases: 7 real problems from the v3 run, 48 clean summaries from the v5 run,
+and 48 clean summaries with one planted error each (12 guesses, 9 invented
+factors, 8 invented numbers, 8 weighings, 7 flipped directions, 4 overstated
+sizes). The bar was fixed in advance: catch at least 80% of the faulty cases,
+flag at most 10% of the clean ones.
+
+| judge prompt | caught | right problem named | clean flagged | unusable | passes |
+|---|---|---|---|---|---|
+| `judge_v1` | 55 of 55 | 55 of 55 | 5 of 48 (10.4%) | 0 | no, by one case |
+| `judge_v2` | 55 of 55 | 55 of 55 | **2 of 48 (4.2%)** | 0 | **yes** |
+
+- Before the first run, the two probe calls had shown the judge calling "risk
+  of leaving" an invented fact. The prompt never said what the risk is a risk
+  of; one sentence was added to `judge_v1` saying so. No saved result existed
+  at that point.
+- `judge_v1`'s five false alarms were one thing: "does not have an online
+  security add-on" (or "opted for" one) called an added fact where the value
+  was "No internet service" or "Yes". **`judge_v2` is `judge_v1` plus one
+  sentence** saying how a yes/no value may be restated. `judge_v1` is kept,
+  unused and hash-pinned, because `outputs/judge_calibration_judge_v1.json`
+  measures it — the same rule the explanation prompts follow.
+- `judge_v2`'s two remaining false alarms are different from each other and
+  from v1's: "due to their month-to-month contract" called a guess, and "a
+  higher overall commitment" called overstated where the comparison really
+  was "higher". So about 4% of clean summaries can be expected to be flagged
+  wrongly — roughly a dozen in 300 — each with a quote that makes it quick to
+  dismiss.
+- On faulty cases the judge often flags a second problem as well (a planted
+  guess is also called an added fact, 9 times). That is reasonable and not
+  counted against it.
+
+**Why:** Requested — step 4 of the approved plan, with one prompt revision of
+the three allowed.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Both runs were live. **208 calls: 2 probes, 103 on
+v1 ($0.0206), 103 on v2 ($0.0213) — $0.042 in all.** Cumulative live spend is
+about **$0.067 of the $0.50 cap**. Saved to
+`outputs/judge_calibration_judge_v1.json` and `..._v2.json` (gitignored). Not
+done yet: the 300-customer run and judging it. Not committed.
+
+## 2026-10-09 — faithfulness.py reviewed at the user's request: one crash and four smaller defects fixed
+
+**Files touched:**
+- `faithfulness.py`
+- `tests/test_faithfulness.py`
+
+**What changed:** The user asked for the file to be checked for errors before
+running the paid steps themselves. It was read end to end; `py_compile` and
+`pyflakes` were clean. Found and fixed:
+
+1. **A crash.** `replay()` took `verdicts[0]` of a case's attempts. A result
+   served from the narration cache has no attempts, so `faithfulness.py score`
+   on any `narrate.py --save` file containing a cache hit raised `IndexError`.
+   Reproduced, then fixed: such a case is treated as accepted (it was, when
+   first made), is not counted as rejected, and is still read by the code
+   checks. The harness's own `run` never caches, so the 300-customer run was
+   not exposed to this.
+2. **A baseline could be written from cached answers.** `build_baseline()` now
+   refuses a result with `cache_hit` or no attempts: a cached answer was not
+   produced by the run being recorded.
+3. **A half-finished paid run could be finished under different settings.**
+   The partial file was matched by case name only, so an interrupted run
+   resumed after a prompt or judge change would have produced one file
+   measuring two things. `_work()` takes `made_with` and refuses, before any
+   call, a partial file whose records say otherwise. `run` passes the prompt
+   version and model; `judge` and `calibrate` pass the judge's model, prompt
+   version and reasoning effort.
+4. **Default output paths were relative** (`outputs/harness_v5.json`), unlike
+   the sample path. Run from another directory, `run` would not have found a
+   half-finished run and would have started — and paid for — a second one
+   there. Now anchored to the repository.
+5. **"one-year contract" counted as stating a tenure of 1** in the
+   `value_unstated` wording check. Reported-only, never gated, so no limit was
+   affected; fixed anyway.
+
+Also: `calibration_cases()`'s docstring claimed each planted kind gets the same
+number of cases. It does not (12 / 9 / 8 / 8 / 7 / 4), because a kind that does
+not apply passes its turn; the docstring now says so. And one `sorted()` key
+was rewritten to quiet a type-checker complaint.
+
+Reviewed and left as they are, on purpose: the degree check does not cross a
+conjunction; the direction check attaches a verb only to the nearest factor
+unless the sentence says "both"/"all"; "far" and "could" are matched as whole
+words and can occasionally fire on an innocent use ("so far"). Each is a
+measurement that the 300-case reading will either confirm or correct.
+
+**Why:** Requested: "check the faithfullness file for errors".
+
+**Requested or incidental:** Requested (the check). The fixes follow from it.
+
+**Verification status:** Six new tests, one per fix. `uv run pytest -q`: 772
+passed, 1 skipped, 10 live deselected. The two tests that pin the checks
+against the hand-read runs still pass, so no fix moved a count. The commands
+given to the user for steps 5 and 6 are unchanged and neither has been started
+(no `harness_v5` file exists). No API call was made. Not committed.
+
+## 2026-10-12 — The 300-customer run: measured, judged, read, and inside every limit
+
+**Files touched:**
+- `docs/faithfulness_baseline.json` (new)
+- `docs/faithfulness_report.txt` (new)
+
+**What changed:** The user ran the two paid steps themselves on 2026-10-12:
+`faithfulness.py run` (300 customers through the explanation layer, no cache)
+and `faithfulness.py judge` (the second model reading the 299 accepted
+summaries). `faithfulness.py baseline` then wrote the two files above.
+
+Prompt v5, `gpt-4o-mini`, temperature 0, seed 42; 133 low, 77 moderate, 57
+high, 33 very high.
+
+| | result | limit |
+|---|---|---|
+| rejected on the first attempt | 2 of 300 (0.7%) | 5% |
+| no summary after the retry | 1 of 300 (0.3%) | 1% |
+| reasons reordered | 0 of 299 | 2% |
+| summary reordered | 2 (0.7%) | 2% |
+| degree overstated | 0 | 2% |
+| speculation | 0 | 2% |
+| weighing | 2 (0.7%) | 2% |
+| direction contradicted | 0 | 2% |
+
+Wording, reported and not gated: "which raises/lowers their risk" in 237 of
+299; the value left unstated in 192, mostly bills, where the summary gives the
+comparison ("much lower than most customers") instead of the figure; "risk
+level" in 10; none over 60 words (25 to 46).
+
+**Every flagged case was read against its input**, as planned.
+
+The code checks flagged 4, all genuine: rows 127 and 299 name the factors in a
+different order from the one given; row 1 says a one-month tenure
+"significantly increases their risk"; row 27 says a 29-month tenure "is not
+enough to offset the other factors".
+
+The judge flagged 17 of 299, with no unusable reply:
+- **2 real**, both weighing, both among the four above (rows 1 and 27).
+- **3 arguable**, all concessions — "despite their current monthly bill being
+  much higher than most customers" (rows 62, 77) and "although ... the other
+  factors contribute to a high overall risk level" (row 195). Each direction
+  is stated correctly; the judge read the concession as ranking the factors.
+  Not counted as findings.
+- **12 false alarms**: 11 are "due to their month-to-month contract ..."
+  called a guess at a cause, when it attributes the risk to the very factors
+  the input says raise it; 1 is "they have paid a total that is higher than
+  most customers" called an added fact, when it restates the factor. That is
+  4.0% of clean summaries, against the 4.2% the calibration predicted.
+
+**30 of the 280 unflagged summaries, chosen at random (seed 7), were also read
+against their inputs. None had a problem either had missed.**
+
+**A finding about the guards, not the model.** All three rejected replies are
+one false positive: a factor's *value* names another field. Row 35's factor
+was `multiplelines` with the value "No phone service"; the model wrote "they
+do not have phone service" and was refused, twice, for naming `phoneservice` —
+so that customer got no summary. Row 63 is the same with "No internet
+service". The `unlisted_field` guard licenses what a factor's name says and
+not what its value says. Replayed in memory with values licensed too, every
+rejection disappears: 3 of 302 here, and also the single rejection in each of
+the two 50-customer runs — the "2% first-attempt rejection" quoted since
+September is this same false positive. **Not changed**: it is a guard in
+`narrate.py`, and the user has been asked.
+
+**Why:** Requested — steps 5 to 8 of the plan approved on 2026-10-09.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** The run made 302 calls (249,223 tokens in, 27,072
+out, **$0.0536**); the judge made 299 (342,528 in, 51,846 out, **$0.0602**).
+Both were run by the user. **Cumulative live spend is about $0.18 of the $0.50
+cap.** `faithfulness.py check` passes on the written baseline. The raw run and
+the verdicts are in `outputs/` (gitignored). Not committed.
+
+## 2026-10-12 — The gate is switched on, and three things the run taught the harness
+
+**Files touched:**
+- `faithfulness.py`
+- `tests/test_faithfulness.py`
+
+**What changed:**
+
+1. **The gate test is now in the suite.**
+   `test_the_committed_baseline_vouches_for_the_code_as_it_is` reads
+   `docs/faithfulness_baseline.json` and asserts `check_baseline()` returns
+   nothing. It was deliberately held back until a baseline existed, because it
+   fails — it does not skip — when the file is missing. A second test pins
+   that the committed baseline is the 300-customer run and holds no customer
+   rows.
+2. **"offset" and "not enough to" joined the weighing list.** Row 27's "it is
+   not enough to offset the other factors" was caught by the judge and not by
+   the check. With the phrase added the check finds it, and also finds the
+   same sentence in the old v3 run (row 24), which the September hand read had
+   missed too. The test pinning the v3 count moves from 4 to 5 and says why.
+   The weighing count on the new run is 2 of 299, still under its limit — the
+   limit was not touched.
+3. **The baseline is written one case per line** (`dump_baseline()`): 426 KB
+   instead of 534, and a later run changes whole lines, so a diff shows which
+   customers' answers moved.
+4. **The judge's files moved to `outputs/judge/`.** `LLMcalls.ipynb` reads
+   every `outputs/*.json` as a saved run and opens the newest. Once the
+   verdicts file existed it was the newest, and it is not a run — the notebook
+   would have failed on it, and on the two calibration files in its
+   every-run comparison. `JUDGED_PATH` and the calibration default now point
+   one folder down, and the three existing files were moved there. The
+   notebook was not edited.
+
+**Why:** 1 is step 8 of the plan. 2 to 4 follow from running it.
+
+**Requested or incidental:** 1 requested. **2, 3 and 4 incidental.** On 4: the
+user had been told the notebook would open the new run; that stopped being
+true the moment the judge finished, and moving three files was the way to make
+it true again without touching a notebook they have open and modified.
+
+**Verification status:** `uv run pytest -q`: 777 passed, 1 skipped, 10 live
+deselected. The gate was made to fail three ways against the real baseline and
+then put back: pointing the code at prompt v3 (two messages, version and
+hash); a guard that refuses everything (300 of 300 over both limits); and
+moving the baseline away (both new tests fail). A copy of `LLMcalls.ipynb` was
+executed in a scratch folder against `outputs/harness_v5.json`: 300 customers,
+no cell raised; the original's hash is unchanged. No API call was made by the
+assistant. Not committed.
+
+## 2026-10-12 — Docs for the measurement: CLAUDE.md and docs/DEMO.md
+
+**Files touched:**
+- `CLAUDE.md`
+- `docs/DEMO.md`
+
+**What changed:**
+
+`CLAUDE.md`: the `faithfulness.py` row no longer says "in progress" and points
+to a new **Faithfulness** section holding the result table, what fails the
+gate and what to do about it, the instruction not to loosen a limit, the
+judge's status as a one-off (and how accurate it proved), where its files
+live and why, and the unfixed guard false positive. The `docs/` row names the
+two new committed files.
+
+`docs/DEMO.md`: a new section 5d shows the committed report and the `check`
+command, what to say about them, and the three commands that re-measure after
+a prompt change (marked as costing money). The test count is 777.
+
+**Why:** A prompt change now fails CI, and whoever meets that needs to find
+out in one place that it is intended and what to run.
+
+**Requested or incidental:** Incidental — documentation of requested work.
+
+**Verification status:** Read back after editing. `cat
+docs/faithfulness_report.txt` and `faithfulness.py check` were run and their
+output is what the runbook shows. The re-measuring commands in 5d were not run
+as written, since they spend money; `sample` and `baseline` were each run
+today and `run` was run by the user. Not committed.

@@ -1,0 +1,150 @@
+==============================================================================
+FAITHFULNESS REPORT
+==============================================================================
+  prompt        : explanation_v5 (fac2052f60a2)
+  model         : gpt-4o-mini, temperature 0.0, seed 42
+  measured      : 2026-10-12
+  double check  : gpt-6-luna (reasoning low), judge_v2 (c0aed8ce2a23)
+  cases         : 300   low 133  moderate 77  high 57  very high 33
+
+  REJECTED BY THE GUARDS (today's guards, on the saved replies)
+    first attempt      2 of 300    0.7%   limit 5%   {'unlisted_field': 2}
+    after the retry    1 of 300    0.3%   limit 1%
+
+  CODE CHECKS, over the 299 accepted summaries   (limit 2% each)
+    finding                    count    rate   could be as high as
+    reasons_reordered              0    0.0%                  1.3%
+    summary_reordered              2    0.7%                  2.4%
+    degree_overstated              0    0.0%                  1.3%
+    speculation                    0    0.0%                  1.3%
+    weighing                       2    0.7%                  2.4%
+    direction_contradicted         0    0.0%                  1.3%
+
+  WORDING (reported, never gated)
+    says_risk_level               10    3.3%
+    direction_refrain            237   79.3%
+    value_unstated               192   64.2%
+    over_word_limit                0    0.0%
+
+  THE JUDGE'S DOUBLE CHECK, over 299 summaries   (a second opinion; not gated)
+    replies that could not be used    0    0.0%
+    called unfaithful                17    5.7%
+      adds_fact                    1
+      wrong_direction              0
+      overstated_size              0
+      guesses_why                 11
+      weighs_factors               5
+
+  FLAGGED CASES (19)
+  - harness_customers.csv row 0
+      This customer has a very high risk of leaving due to their
+      month-to-month contract, the use of fiber optic internet service, and
+      a lower overall commitment compared to most customers.
+      judge: guesses_why: 'due to their month-to-month contract, the use of fiber optic internet service, and a lower overall commitment compared to most customers.'
+  - harness_customers.csv row 1
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They also have a lower overall commitment compared to most
+      customers and have been with the service for only one month, which
+      significantly increases their risk.
+      code : weighing: says 'significantly increases their risk': the strength of a factor is not given
+      judge: weighs_factors: 'significantly increases their risk'
+  - harness_customers.csv row 27
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They also use fiber optic internet service, which further
+      increases their risk. Although they have been a customer for 29
+      months, which lowers their risk, it is not enough to offset the other
+      factors.
+      code : weighing: says 'not enough to'
+      code : weighing: says 'offset'
+      judge: weighs_factors: 'it is not enough to offset the other factors.'
+  - harness_customers.csv row 34
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They have paid a total that is higher than most customers,
+      which lowers their risk. However, they use fiber optic internet
+      service, which raises their risk.
+      judge: adds_fact: 'They have paid a total'
+  - harness_customers.csv row 53
+      This customer has a very high risk of leaving due to their
+      month-to-month contract, the use of fiber optic internet service, and
+      their monthly bill being much higher than most customers.
+      judge: guesses_why: 'due to their month-to-month contract, the use of fiber optic internet service, and their monthly bill being much higher than most customers'
+  - harness_customers.csv row 62
+      This customer has a two-year contract, which lowers their risk of
+      leaving. Their overall commitment is much higher than most customers,
+      also lowering their risk, despite their current monthly bill being
+      much higher than most customers, which raises their risk.
+      judge: weighs_factors: 'despite their current monthly bill being much higher than most customers'
+  - harness_customers.csv row 77
+      This customer has a two-year contract, which lowers their risk of
+      leaving. Their overall commitment is much higher than most customers,
+      also lowering their risk, despite their current monthly bill being
+      much higher than most customers, which raises their risk.
+      judge: weighs_factors: 'despite their current monthly bill being much higher than most customers, which raises their risk'
+  - harness_customers.csv row 86
+      This customer has a low risk of leaving due to their two-year
+      contract, a monthly bill that is much lower than most customers, and
+      the absence of internet service.
+      judge: guesses_why: 'due to their two-year contract, a monthly bill that is much lower than most customers, and the absence of internet service'
+  - harness_customers.csv row 89
+      This customer has a high risk of leaving due to their month-to-month
+      contract, which raises their risk. Although they have an online
+      security add-on that lowers risk, their overall commitment is lower
+      than most customers, which raises their risk again.
+      judge: guesses_why: 'due to their month-to-month contract'
+  - harness_customers.csv row 127
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They do not have online security, which also raises their
+      risk, although their DSL internet service lowers it.
+      code : summary_reordered: summary names ['contract', 'onlinesecurity', 'internetservice']; given order was ['contract', 'internetservice', 'onlinesecurity']
+  - harness_customers.csv row 195
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They also use fiber optic internet service, further
+      increasing their risk. Although they have been a customer for 51
+      months, which lowers their risk, the other factors contribute to a
+      high overall risk level.
+      judge: weighs_factors: 'Although they have been a customer for 51 months, which lowers their risk, the other factors contribute to a high overall risk level.'
+  - harness_customers.csv row 215
+      This customer has a high risk of leaving due to their month-to-month
+      contract and the use of fiber optic internet service, which both
+      increase their risk. Their payment method of automatic bank transfer
+      lowers their risk.
+      judge: guesses_why: 'due to their month-to-month contract and the use of fiber optic internet service'
+  - harness_customers.csv row 232
+      This customer has a high risk of leaving due to their month-to-month
+      contract, the use of fiber optic internet service, and their average
+      monthly bill being much higher than most customers.
+      judge: guesses_why: 'due to their month-to-month contract, the use of fiber optic internet service, and their average monthly bill being much higher than most customers.'
+  - harness_customers.csv row 233
+      This customer has a high risk of leaving due to their month-to-month
+      contract, which raises their risk. Additionally, their average monthly
+      bill is much higher than most customers, and they use fiber optic
+      internet service, both of which also increase their risk.
+      judge: guesses_why: 'due to their month-to-month contract'
+  - harness_customers.csv row 237
+      This customer has a high risk of leaving due to their month-to-month
+      contract and the use of fiber optic internet service, which both
+      increase their risk. Their tenure of 34 months is similar to most
+      customers, which lowers their risk.
+      judge: guesses_why: 'due to their month-to-month contract and the use of fiber optic internet service'
+  - harness_customers.csv row 263
+      This customer has a high risk of leaving due to their month-to-month
+      contract, the use of fiber optic internet service, and a monthly bill
+      that is higher than most customers.
+      judge: guesses_why: 'due to'
+  - harness_customers.csv row 277
+      This customer has a very high risk of leaving due to their
+      month-to-month contract and the use of fiber optic internet service,
+      which both raise their risk. Additionally, they do not use paperless
+      billing, which lowers their risk.
+      judge: guesses_why: 'due to their month-to-month contract and the use of fiber optic internet service'
+  - harness_customers.csv row 285
+      This customer has a very high risk of leaving due to their
+      month-to-month contract, the use of fiber optic internet service, and
+      their monthly bill being much higher than most customers.
+      judge: guesses_why: 'due to their month-to-month contract, the use of fiber optic internet service, and their monthly bill being much higher than most customers'
+  - harness_customers.csv row 299
+      This customer has a month-to-month contract, which raises their risk
+      of leaving. They have a lower tenure than most customers, which also
+      raises their risk, despite having a DSL internet service that lowers
+      it.
+      code : summary_reordered: summary names ['contract', 'tenure', 'internetservice']; given order was ['contract', 'internetservice', 'tenure']

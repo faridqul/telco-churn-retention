@@ -38,13 +38,15 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
+| `tests/test_faithfulness.py` | The harness, offline. Every check in both directions; the judge's reply validation; the resumable runner; and each way the gate can fail, produced on purpose. Two tests pin the checks against the hand-read runs in `outputs/` and skip when those are absent. An autouse fixture reuses the result for identical cases within one test — without it the 300-case gate tests take over a minute. |
 | `tests/test_explain_api.py` | `/explain`, against the **real** pipeline (`explain_customer()` needs the preprocessor and booster, so `DummyModel` cannot stand in) and a scripted `FakeLLM`. Pins `/explain` == `/predict` on all 50 simulated customers, and imports `api.py` from a directory holding only the image's four modules. |
 | `docs/AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. Cited throughout as "AUDIT.md M9" etc.; those citations mean this file. |
-| `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), and the local `AUDIT.md`. |
+| `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), `faithfulness_baseline.json` + `faithfulness_report.txt` (committed output of `faithfulness.py baseline`; the baseline is what CI's gate reads), `DEMO.md`, and the local `AUDIT.md`. |
 | `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
 | `prompts/` | Versioned LLM system prompts. `narrate.py` loads one; tests pin each file's sha256. Never edit a prompt in place — add `explanation_vN+1.txt`. Current: **v5** (2026-10-07): v3 plus four "say only what you were given" rules — degree words need a "much" comparison, no guessing why a factor matters, no weighing factors against each other, and the given order must survive. None of the four is checked in code. v3 is kept because `stage2_v3.json` measures it; a v4 was written, measured once and deleted (CHANGELOG.md, 2026-09-19), and that number is not reused. When bumping, also add the old version to `narrate.SENT_KEYS_BY_PROMPT`, or backfilling its saved runs raises. |
 | `llm_tracing.py` | Optional Langfuse tracing for `narrate()`: one trace per narration, one generation per API attempt, guard verdicts as scores, session per run. **Off unless handed a tracer**; `from_env()` is a no-op without `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`. Every SDK call is wrapped so a Langfuse failure only warns and never changes a result. `--check` tests the keys; `--backfill outputs/x.json` uploads a saved run with no model calls. SDK (v4, `llm` group) imported lazily. Tested offline against the real SDK with an in-memory exporter (`tests/test_llm_tracing.py`). |
 | `narration_cache.py` | Optional SQLite cache for `narrate()`, keyed by **exactly what the model was sent** plus model/temperature/seed. One table per prompt version (`cache_explanation_v5`), so a v3 answer can never be served to a v5 request. Entries live a **week** while a prompt is current, **24h** if born in a prompt's first day (settling), and **24h after the prompt or model is switched away from** — a rollback window. The four numbers and the pure `expires_at()` they feed are at the top of the module; `--ttl` or `NARRATION_CACHE_TTL` replaces the whole policy with a flat TTL (the escape hatch). **Off unless handed a cache in the library, on by default in the CLI** — `--no-cache` is the measurement switch. `sqlite3` only, so no dependency, no image change. `--import-all` loads saved runs from `outputs/` at no cost; `--stats`, `--prune`. A cache failure warns and degrades, exactly like `llm_tracing.py`. |
+| `faithfulness.py` | Step 4 of the GenAI plan: **measures** the explanation layer instead of guarding it. See the Faithfulness section below. Six code checks over an accepted answer, a stratified sample of 300 of the test set's 528 distinct model inputs, a resumable paid run, a one-off judge, and the CI gate `check_baseline()`. Subcommands `sample`, `score`, `calibrate`, `run`, `judge`, `baseline`, `check`. The checks never reject anything at run time — don't wire them into `validate_narrative()`. |
 | `LLMcalls.ipynb` | Read-only viewer for saved LLM runs in `outputs/*.json`: overview and cost, the system prompt, one input/output card per customer (showing exactly what that prompt version was sent), a summaries table, token/latency/length plots, a phrase-flagging aid, the three explanation styles (§8), and a cross-run comparison that re-checks every saved reply with today's guards (§9). **Makes no API calls.** Uses `narrate.rejection_rates()` rather than recomputing rates. Stored with outputs (~160 KB). |
 | `frontend/` | `index.html`, a single static page calling `/predict`. No build step. |
 
@@ -422,6 +424,64 @@ always present), `explanation` (the language model's accepted answer, or
 - **No test can reach a real language model unless marked `live`:**
   `tests/conftest.py` removes `OPENAI_API_KEY` from the environment for every
   other test, because the app builds a client at startup when the key is set.
+
+## Faithfulness: the measurement and the gate
+
+`faithfulness.py` measures what gets *past* the guards. Measured once, on
+2026-10-12: prompt v5, `gpt-4o-mini`, 300 distinct inputs from the held-out
+test set (133 low, 77 moderate, 57 high, all 33 very high).
+
+| | result | limit |
+|---|---|---|
+| rejected on the first attempt | 2 of 300 | 5% |
+| no summary after the retry | 1 of 300 | 1% |
+| reasons reordered | 0 of 299 | 2% |
+| summary reordered | 2 | 2% |
+| degree overstated | 0 | 2% |
+| speculation | 0 | 2% |
+| weighing | 2 | 2% |
+| direction contradicted | 0 | 2% |
+
+- **The gate is `tests/test_faithfulness.py::test_the_committed_baseline_vouches_for_the_code_as_it_is`**,
+  which runs in the ordinary `uv run pytest -q` CI step. It reads
+  `docs/faithfulness_baseline.json` and fails when the prompt's hash, the
+  model, the seed or the temperature differs from what was measured; when
+  today's guards or checks put the 300 saved answers over a limit; or when the
+  file is missing (a failure, never a skip).
+- **Changing the explanation prompt therefore fails CI until it is
+  re-measured:** `faithfulness.py sample`, `run` (about $0.05, 13 min),
+  `baseline`. That is the gate working, not a broken test.
+- **Changing a guard re-scores the same 300 real answers for free.** Nothing
+  is re-generated; `replay()` puts the saved text back through
+  `validate_narrative()`.
+- **The limits were fixed on 2026-10-09, before the run existed**, from the
+  50-customer result. Don't loosen one to make a failure go away — a failure is
+  a finding to take to the user.
+- **The checks are measurements, not guards.** A degree guard and a
+  speculation guard existed in September and were removed at the user's
+  request; this counts the same things after the fact.
+- **The judge (`gpt-6-luna`, `prompts/judge_v2.txt`) is a one-off double check
+  of this one run, not part of the product** — the user's instruction. Nothing
+  at run time calls it, the gate ignores its verdicts, and its settings are
+  deliberately absent from `current_meta()`, so changing or deleting it cannot
+  fail CI. Don't add it to the gate or to `/explain`. It refuses a fixed
+  temperature, so it is not exactly repeatable; its verdicts are saved and
+  never re-asked.
+- **How good the judge is, measured:** on 103 cases with known answers it
+  caught 55 of 55 and flagged 2 of 48 clean ones. On the 300 it flagged 17;
+  read by hand, 2 are real, 3 arguable and 12 false alarms, 11 of them "due
+  to" taken for a guess. It found one thing the code checks had missed ("not
+  enough to offset the other factors"), since added to the weighing list.
+- **The judge's files live in `outputs/judge/`, not `outputs/`.**
+  `LLMcalls.ipynb` reads every `outputs/*.json` as a saved run and opens the
+  newest; a file of verdicts there breaks it.
+- **Known and unfixed as of 2026-10-12:** every guard rejection in the three
+  measured runs (1 of 50 on v3, 1 of 50 on v5, 3 replies of 302 here) is one
+  false positive. A factor's *value* can name another field — "No phone
+  service" for `multiplelines`, "No internet service" for the add-ons — and
+  the `unlisted_field` guard licenses what a factor's name says but not what
+  its value says. Replayed in memory with values licensed too: 0 rejections in
+  all three runs. The user has been asked whether to change the guard.
 
 ## CHANGELOG.md — mandatory, every session
 

@@ -304,6 +304,47 @@ The Docker image does not contain the explanation layer: there `/explain`
 answers 503 and `/health` reports `"explain_available":false`. `/predict` is
 unaffected.
 
+## 5d. How faithful the summaries are (free)
+
+The explanation layer was measured on 300 customers on 2026-10-12. The result
+is committed, so showing it costs nothing:
+
+```bash
+cat docs/faithfulness_report.txt
+uv run python faithfulness.py check
+```
+```
+OK: the baseline vouches for the current prompt, model, guards and checks.
+```
+
+What to say:
+
+- **300 customers, each a different question.** The test set's 1,405 customers
+  produce only 528 distinct inputs to the language model; 300 of those were
+  sampled, including all 33 at "very high" risk.
+- **The guards refused 2 of 300 first answers**, and one customer ended with
+  no summary. Limits: 5% and 1%.
+- **Six code checks then read the 299 accepted summaries** for what the guards
+  do not look at. They found 2 that name the factors out of order and 2 that
+  claim a strength the data never gave ("significantly increases their
+  risk"). Nothing else. The limit is 2% for each.
+- **`check` is the CI gate.** The baseline records the hash of the prompt it
+  measured. Change the prompt and CI fails until the new one is measured; and
+  a guard changed to refuse sound answers fails against these 300 real ones.
+
+A second model also read all 299 as a one-off double check. It is not part of
+the product and the gate does not look at it. It flagged 17; read by hand, 2
+are real (both already counted above), 3 are arguable, and 12 are false alarms
+— 11 of them the phrase "due to", which it took for a guess.
+
+Re-measuring after a prompt change **costs money** (about $0.05, 13 minutes):
+
+```bash
+uv run python faithfulness.py sample
+uv run --env-file .env python faithfulness.py run
+uv run python faithfulness.py baseline
+```
+
 ## 6. Reading saved LLM runs (free, no API calls)
 
 ```bash
@@ -325,7 +366,7 @@ It never calls the API, so re-run it as often as you like.
 uv run pytest -q
 ```
 ```
-599 passed, 1 skipped, 10 deselected
+777 passed, 1 skipped, 10 deselected
 ```
 
 The 10 deselected are the live tests that cost money. They are excluded by

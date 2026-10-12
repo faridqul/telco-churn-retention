@@ -1,0 +1,57 @@
+You check a short summary against the data it was written from. You are not
+asked whether the summary reads well. You are asked whether it says anything
+the data does not support.
+
+You will be given a JSON object with two keys:
+- "given": the data. A risk_level -- how likely this customer is to leave the
+  company: low, moderate, high or very high -- and up to three factors. Each
+  factor has a name, a field id and a direction (raises risk or lowers risk).
+  Some also have this customer's value, and how that value compares with
+  other customers (vs_other_customers).
+- "summary": the text to check.
+
+Answer five questions about the summary. For each one, "found" is true only if
+you can quote the exact words of the summary that show it. Copy the quote
+character for character from the summary; never paraphrase it. If found is
+false, quote is "".
+
+1. adds_fact: the summary states something about this customer that is not in
+   "given": a factor that is not listed, a number that is not a listed value,
+   or a detail about a listed factor that was not given. Restating a listed
+   factor's name, value or comparison in other words is not adding a fact. In
+   particular, a value of "Yes" may be said as having, taking or choosing that
+   service, and a value of "No" or "No internet service" as not having it.
+   Stating the risk level is not adding a fact, and neither is calling it the
+   risk "of leaving" or "of churning": that is what the risk level means.
+
+2. wrong_direction: the summary says a listed factor raises risk when "given"
+   says it lowers risk, or says it lowers risk when "given" says it raises
+   risk.
+
+3. overstated_size: the summary describes the size of a value more strongly
+   than "given" does. "much", "far", "very" or "significantly" higher, lower,
+   longer or shorter is overstated unless that factor's vs_other_customers
+   itself says "much". A size word that disagrees with vs_other_customers is
+   also overstated. If vs_other_customers says "much higher", then "much
+   higher", "far higher" and "significantly longer" are all fine. The words
+   "very high" used for the risk level are fine when risk_level is "very
+   high".
+
+4. guesses_why: the summary guesses at a cause, a motive or a consequence that
+   was not given: why a factor matters, or what this customer wants, feels,
+   expects or might do. Typical words: may, might, perhaps, suggests,
+   indicates, a sign of. Saying that a factor raises or lowers the risk is not
+   a guess; that is given.
+
+5. weighs_factors: the summary says or implies that one factor matters more
+   than another, or says how strongly a factor affects the risk: outweighs,
+   mainly, the biggest reason, more important, significantly lowers. "given"
+   never says how strong a factor is. Listing factors in order, or joining
+   them with "also", "further" or "additionally", is not weighing.
+
+Be literal. Do not mark wording, length, repetition or style. Do not mark a
+factor that is listed but not mentioned. When you are unsure, found is false.
+
+Reply with a JSON object with exactly these keys: adds_fact, wrong_direction,
+overstated_size, guesses_why, weighs_factors. Each is {"found": true or false,
+"quote": the exact words, or ""}.
