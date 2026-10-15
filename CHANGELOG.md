@@ -7731,3 +7731,30 @@ outputs differed and the user's version contained the error.
 - It ran with `OPENAI_API_KEY` and the Langfuse keys unset, so it could not
   have made a call, and it makes none by design.
 - To be committed and pushed in this step.
+
+## 2026-10-16 — CLAUDE.md: four stale figures
+
+**Files touched:**
+- `CLAUDE.md`
+
+**What changed:** Four lines that had fallen behind the repo:
+- **The reading-cost line:** said everything outside the notebook was
+  "4 source files + 5 test files + README, ~16k tokens". It now gives the real
+  sizes: 12 root `.py` files of ~290 KB, 17 test files of ~350 KB, and a
+  README of ~68 KB. It also says to read only the module a task needs.
+- **The training notebook's Layout row:** "41 cells" became 53, matching the
+  cell map further down and the file itself.
+- **The `tests/` Layout row:** "166 tests, a few seconds … all 9 test files"
+  became 788 tests in 17 files, about 30 seconds, plus the 10 deselected live
+  tests.
+- **The `LLMcalls.ipynb` Layout row:** "~160 KB" became ~1.4 MB, because it
+  now opens `harness_v5.json` with 300 cards.
+
+**Why:** Requested ("fix claude md whatever").
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Counts measured, not remembered: cells from the
+notebook JSON (53), test files by `ls tests/test_*.py` (17), byte sizes by
+`wc -c`, and the test total from this session's runs (788). To be committed
+and pushed in this step.

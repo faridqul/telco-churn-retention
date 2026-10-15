@@ -18,13 +18,15 @@ for i,c in enumerate(nb['cells']):
     print(f'--- [{i}] {c[\"cell_type\"]} ---'); print(''.join(c['source']))"
 ```
 
-Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
+Everything else is no longer small: the 12 root `.py` files are ~290 KB
+(~70k tokens), the 17 test files ~350 KB (~90k), the README ~68 KB (~17k).
+Read the module the task needs, not the whole tree.
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `telco_customer_churn.ipynb` | 41 cells. Training only. Produces the artifact. |
+| `telco_customer_churn.ipynb` | 53 cells (see the cell map below). Training only. Produces the artifact. |
 | `feature_engineering_telco.py` | 6 derived features. Imported by the notebook, API, batch script, config, and 2 test files. **The single most load-bearing module.** Guards its own `.str` use — an all-blank `paymentmethod` degrades to `is_auto_pay=0` instead of raising (AUDIT.md M9). |
 | `campaign_profit.py` | The profit formula, once. `campaign_profit()`, `break_even_threshold()`, `profit_curve()`, `best_threshold()`. Imported by the notebook in 7 places; economics are keyword-only so `clv`/`cost` can't be swapped (AUDIT.md C11). |
 | `config.py` | Paths, threshold loading, 3 startup validators. Shared by both consumers. Missing/corrupt metadata is **fatal**; a bad value inside readable metadata **degrades**. |
@@ -34,7 +36,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `check_model_environment.py` | CI's hard version gate. Fails the build when installed libraries differ from `model_metadata.json["library_versions"]`. The strict counterpart to `config.validate_environment_versions()`. Also runs as a `docker build` step. |
 | `Dockerfile` | Production image. One image, both entrypoints (`uvicorn api:app` by default, `python telco_model.py` for batch). Multi-stage, non-root, `uv sync --no-dev`. Verifies itself at build time — see the Docker section below. |
 | `.dockerignore` | Keeps the local `.venv` (1.2 GB) and the notebook out of the build context. Without it every build uploads both to the daemon. |
-| `tests/` | 166 tests, a few seconds. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks all 9 test files at collection. |
+| `tests/` | 788 tests in 17 files, about 30 seconds, plus 10 `live` tests deselected by default. `tests/__init__.py` is empty but **load-bearing** — deleting it breaks every test file at collection. |
 | `tests/conftest.py` | Shared `DummyModel` and `_FakeJoblib`. Imported explicitly (`from tests.conftest import ...`) — pytest auto-loads fixtures, not plain names. One shared fake is deliberate: it makes an API/batch divergence fail a test instead of hiding in two copies. |
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
@@ -47,7 +49,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `llm_tracing.py` | Optional Langfuse tracing for `narrate()`: one trace per narration, one generation per API attempt, guard verdicts as scores, session per run. **Off unless handed a tracer**; `from_env()` is a no-op without `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY`. Every SDK call is wrapped so a Langfuse failure only warns and never changes a result. `--check` tests the keys; `--backfill outputs/x.json` uploads a saved run with no model calls. SDK (v4, `llm` group) imported lazily. Tested offline against the real SDK with an in-memory exporter (`tests/test_llm_tracing.py`). |
 | `narration_cache.py` | Optional SQLite cache for `narrate()`, keyed by **exactly what the model was sent** plus model/temperature/seed. One table per prompt version (`cache_explanation_v5`), so a v3 answer can never be served to a v5 request. Entries live a **week** while a prompt is current, **24h** if born in a prompt's first day (settling), and **24h after the prompt or model is switched away from** — a rollback window. The four numbers and the pure `expires_at()` they feed are at the top of the module; `--ttl` or `NARRATION_CACHE_TTL` replaces the whole policy with a flat TTL (the escape hatch). **Off unless handed a cache in the library, on by default in the CLI** — `--no-cache` is the measurement switch. `sqlite3` only, so no dependency, no image change. `--import-all` loads saved runs from `outputs/` at no cost; `--stats`, `--prune`. A cache failure warns and degrades, exactly like `llm_tracing.py`. |
 | `faithfulness.py` | Step 4 of the GenAI plan: **measures** the explanation layer instead of guarding it. See the Faithfulness section below. Six code checks over an accepted answer, a stratified sample of 300 of the test set's 528 distinct model inputs, a resumable paid run, a one-off judge, and the CI gate `check_baseline()`. Subcommands `sample`, `score`, `calibrate`, `run`, `judge`, `baseline`, `check`. The checks never reject anything at run time — don't wire them into `validate_narrative()`. |
-| `LLMcalls.ipynb` | Read-only viewer for saved LLM runs in `outputs/*.json`: overview and cost, the system prompt, one input/output card per customer (showing exactly what that prompt version was sent), a summaries table, token/latency/length plots, a phrase-flagging aid, the three explanation styles (§8), and a cross-run comparison that re-checks every saved reply with today's guards (§9). **Makes no API calls.** Uses `narrate.rejection_rates()` rather than recomputing rates. Stored with outputs (~160 KB). |
+| `LLMcalls.ipynb` | Read-only viewer for saved LLM runs in `outputs/*.json`: overview and cost, the system prompt, one input/output card per customer (showing exactly what that prompt version was sent), a summaries table, token/latency/length plots, a phrase-flagging aid, the three explanation styles (§8), and a cross-run comparison that re-checks every saved reply with today's guards (§9). **Makes no API calls.** Uses `narrate.rejection_rates()` rather than recomputing rates. Stored with outputs: opens the newest run, `harness_v5.json` since 2026-10-16, so ~1.4 MB with 300 cards. |
 | `frontend/` | `index.html`, a single static page calling `/predict`. No build step. |
 
 ## Where files go
