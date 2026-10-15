@@ -7758,3 +7758,30 @@ outputs differed and the user's version contained the error.
 notebook JSON (53), test files by `ls tests/test_*.py` (17), byte sizes by
 `wc -c`, and the test total from this session's runs (788). To be committed
 and pushed in this step.
+
+## 2026-10-16 — frontend/index.html: two stale comments about /explain
+
+**Files touched:**
+- `frontend/index.html` (comments only)
+
+**What changed:** Two comments said there was no `/explain` endpoint. One sat
+above the AI explanation card: "it needs the /explain endpoint … which
+doesn't exist". The other sat above `showExplanation()`: "there is no
+/explain endpoint to fetch it from".
+
+Both now say the endpoint exists, that the page still calls only `/predict`,
+and that `/explain`'s `explanation` field is the shape `showExplanation()`
+renders. They also say it can be `null`, with `meta.status` giving the
+reason. No markup, style or script changed.
+
+**Why:** Requested ("fix the stale comments"), ahead of the frontend work the
+user will do.
+
+**Requested or incidental:** Requested.
+
+**Verification status:**
+- `git diff -U0` shows only the two comment blocks changed.
+- The page still has 4 opening and 4 closing HTML comment markers.
+- Its inline script passes `node --check`.
+- The page was not opened in a browser; nothing it renders changed.
+- To be committed and pushed in this step.

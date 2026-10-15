@@ -631,11 +631,12 @@
 
     <!-- API URL is a visible field, not a constant buried in the code, so
          the same file works against localhost and a deployed API. -->
-    <!-- The AI explanation. Not wired up yet: it needs the /explain
-         endpoint (step three of the GenAI plan), which doesn't exist.
-         The slots match narrate.py's structured output -- risk_level,
-         reasons[{field, direction}], summary -- and showExplanation()
-         below renders that shape once there is something to call. -->
+    <!-- The AI explanation. Not wired up yet: the page still calls only
+         /predict. POST /explain exists (2026-10-09) and takes the same
+         body; its `explanation` field is narrate.py's structured output --
+         risk_level, reasons[{field, direction}], summary -- or null, with
+         meta.status saying why. showExplanation() below renders that
+         shape. -->
     <div id="ai-explanation" class="card">
       <div class="ai-head">
         <p class="panel-label">AI explanation</p>
@@ -774,8 +775,9 @@ function showValidationError(detail) {
 }
 
 
-/* Renders narrate.py's structured output into the AI card. Not called
-   anywhere yet -- there is no /explain endpoint to fetch it from. Text
+/* Renders /explain's `explanation` field (narrate.py's structured output)
+   into the AI card. Not called anywhere yet: the page does not request
+   /explain. `explanation` can be null -- check meta.status first. Text
    goes in through textContent, never innerHTML: this string is written
    by a language model. */
 function showExplanation(structured) {
