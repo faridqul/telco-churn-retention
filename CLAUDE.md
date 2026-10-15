@@ -475,13 +475,20 @@ test set (133 low, 77 moderate, 57 high, all 33 very high).
 - **The judge's files live in `outputs/judge/`, not `outputs/`.**
   `LLMcalls.ipynb` reads every `outputs/*.json` as a saved run and opens the
   newest; a file of verdicts there breaks it.
-- **Known and unfixed as of 2026-10-12:** every guard rejection in the three
-  measured runs (1 of 50 on v3, 1 of 50 on v5, 3 replies of 302 here) is one
-  false positive. A factor's *value* can name another field — "No phone
-  service" for `multiplelines`, "No internet service" for the add-ons — and
-  the `unlisted_field` guard licenses what a factor's name says but not what
-  its value says. Replayed in memory with values licensed too: 0 rejections in
-  all three runs. The user has been asked whether to change the guard.
+- **The table above is what the guards did on the day.** Re-checked with
+  today's guards the same 300 saved replies give 0 first-attempt rejections and
+  0 customers without a summary (300 accepted), and the six gated counts are
+  unchanged. The committed report shows today's figures because it is rendered
+  through today's guards; the baseline keeps what happened on the day.
+- **Fixed 2026-10-15: the "No phone service" / "No internet service" false
+  positive.** Every guard rejection in the three measured runs (1 of 50 on v3,
+  1 of 50 on v5, 3 replies of 302 here) was a correct summary repeating one of
+  these two values, which name a different field (`phoneservice`,
+  `internetservice`) from the factor's own. `narrate.VALUE_LICENSES` now
+  licenses exactly those two, and only when the value was given. The user chose
+  an explicit list over licensing every value. They are the only two values in
+  `config.CATEGORICAL_DOMAINS` that name another field, and
+  `tests/test_narrate.py` fails if a third ever appears.
 
 ## CHANGELOG.md — mandatory, every session
 

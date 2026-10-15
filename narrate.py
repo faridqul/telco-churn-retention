@@ -741,6 +741,19 @@ def parse_output(text: str, payload: dict) -> tuple[dict | None, str | None]:
     }, None
 
 
+# The only two values in the data that name a field other than their own:
+# 'No phone service' (multiplelines) says phoneservice, and 'No internet
+# service' (the six add-ons) says internetservice. A summary that repeats a
+# value it was handed cannot be hallucinating, so the unlisted-field guard
+# licenses the field the value names. Listed explicitly rather than reading
+# every value: these two produced every guard rejection measured on v3 and v5
+# (5 replies across 400 customers), and nothing else needs it.
+VALUE_LICENSES = {
+    "No phone service": "phoneservice",
+    "No internet service": "internetservice",
+}
+
+
 def validate_narrative(
     text: str, payload: dict,
 ) -> tuple[dict | None, str | None, str | None]:
@@ -784,10 +797,13 @@ def validate_narrative(
     # average_monthly_charges is "average monthly bill across their whole
     # tenure", which says 'tenure'. A summary that echoes a label it was
     # handed cannot be hallucinating, so whatever the labels say is licensed
-    # alongside the fields they belong to.
+    # alongside the fields they belong to. The same goes for the two values in
+    # VALUE_LICENSES.
     listed = set(factors)
     for factor in payload["factors"]:
         listed |= fields_mentioned(factor["name"])
+        if factor.get("value") in VALUE_LICENSES:
+            listed.add(VALUE_LICENSES[factor["value"]])
     unlisted = sorted(mentioned - listed)
     if unlisted:
         return None, "unlisted_field", (

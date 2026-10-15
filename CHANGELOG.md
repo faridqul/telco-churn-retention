@@ -7286,3 +7286,132 @@ docs/faithfulness_report.txt` and `faithfulness.py check` were run and their
 output is what the runbook shows. The re-measuring commands in 5d were not run
 as written, since they spend money; `sample` and `baseline` were each run
 today and `run` was run by the user. Not committed.
+
+## 2026-10-15 — Guard fix: "No phone service" and "No internet service" are no longer refused
+
+**Files touched:**
+- `narrate.py`
+- `tests/test_narrate.py`
+- `docs/faithfulness_report.txt`
+
+**What changed:**
+
+The `unlisted_field` guard refuses a summary that mentions a customer field
+which is not among the factors the model was given. It already allowed
+whatever a factor's *name* mentions; it never looked at a factor's *value*.
+Two values name a different field from their own: "No phone service" (a value
+of `multiplelines`) names `phoneservice`, and "No internet service" (a value of
+the six add-ons) names `internetservice`. So a correct summary such as "they do
+not have phone service" was refused as an invented fact.
+
+`narrate.py` gains `VALUE_LICENSES`, a dict of exactly those two values and the
+field each one names. While building the list of allowed fields, the guard now
+adds that field when a factor carries one of the two values. Nothing else about
+the guard changed: the phrase is allowed only when the value was actually
+given, so "no phone service" said about a customer whose factors never mention
+it is still refused.
+
+`tests/test_narrate.py` gains 11 tests (and an `import config`): the exact two
+summaries the guard refused in the measured runs, now accepted; "no internet
+service" accepted for each of the six add-ons; phone service still refused
+when no value says it; a plain "No" for `multiplelines` licensing nothing; and
+a test that lists every value in `config.CATEGORICAL_DOMAINS` naming a field
+other than its own and requires that list to equal `VALUE_LICENSES`, so a new
+value of this kind fails CI instead of being missed.
+
+`docs/faithfulness_report.txt` was re-rendered from the committed baseline
+with `render_report()`, because the report states its rejection figures
+"with today's guards". It changed on four lines: first-attempt rejections
+2 → 0 of 300, after the retry 1 → 0, the code checks now read 300 accepted
+summaries rather than 299, and two wording rates shifted with the new
+denominator (`value_unstated` 192 → 193). The six gated counts did not move.
+`docs/faithfulness_baseline.json` was **not** touched: it still records what
+the guards did on 2026-10-12.
+
+**Why:** Every guard rejection in the three measured runs (1 of 50 on v3, 1 of
+50 on v5, 3 replies of 302 on the 300-customer run) was this false alarm. Each
+cost a second paid call, and one customer got no summary at all.
+
+**Requested or incidental:** Requested. The user first proposed fixing
+`multiplelines` only, was shown that 3 of the 5 rejected replies were "No
+internet service", and chose an explicit list of the two values over licensing
+every value. Re-rendering the report is incidental: it would otherwise
+contradict the gate it describes.
+
+**Verification status:** `uv run pytest -q`: 788 passed, 1 skipped, 10 live
+deselected. The new tests were run with `VALUE_LICENSES` emptied and 8 of them
+failed, so they test the fix. Re-checking saved replies with the new guard:
+the 300-customer run 3 rejected → 0 (302 replies), `stage2_v3.json` 1 → 0,
+`stage2_v5.json` 1 → 0. `faithfulness.py check`: OK. No API call was made; the
+prompt is unchanged, so no re-measurement is needed. Not committed.
+
+## 2026-10-15 — CLAUDE.md and docs/DEMO.md: the guard fix
+
+**Files touched:**
+- `CLAUDE.md`
+- `docs/DEMO.md`
+
+**What changed:**
+
+`CLAUDE.md`, Faithfulness section: the "Known and unfixed" paragraph is
+replaced by two. One says the result table is what the guards did on
+2026-10-12, and that today's guards give 0 first-attempt rejections and 0
+customers without a summary on the same replies, with the six gated counts
+unchanged. The other records the fix: what the false positive was,
+`narrate.VALUE_LICENSES`, that the user chose an explicit list, and the test
+that fails if a third such value appears. The table itself was left as
+measured.
+
+`docs/DEMO.md`, section 5d: the "guards refused 2 of 300" bullet now says they
+refuse none today, what they refused on the day and why, and that the report
+reads 0 because it uses today's guards. "the 299 accepted summaries" became
+"the accepted summaries". Section 7's test count is 788.
+
+**Why:** Both described the false positive as open and quoted figures the
+re-rendered report no longer shows.
+
+**Requested or incidental:** Incidental — documentation of the requested
+guard fix.
+
+**Verification status:** Read back after editing; the figures were taken from
+the runs listed in the previous entry. Not committed.
+
+## 2026-10-15 — Live check of the guard fix on 15 customers (no tracked file changed)
+
+**Files touched:**
+- `outputs/guard_check/guard_check_2026-10-15.json` (new; gitignored, not committed)
+
+No tracked file changed. Recorded here because it spent money and it is the
+live evidence for the guard fix in the entry above.
+
+**What was done:** 15 customers were narrated live on prompt v5,
+`gpt-4o-mini`, temperature 0, seed 42, with no cache, through the fixed guard.
+They were the 4 customers behind the 5 rejected replies (harness rows 35 and
+63, and `simulated_new_customers.csv` rows 18 and 17 from `stage2_v3.json` and
+`stage2_v5.json`), 8 harness customers whose factors carry "No internet
+service" (rows 4, 9, 21, 104, 114, 144, 191, 275), and 3 ordinary harness
+customers, one each from moderate, high and very high (rows 7, 1, 0). The
+script was a scratch file, not added to the repo; the results file sits in a
+subfolder so `LLMcalls.ipynb`, which opens the newest `outputs/*.json`, does
+not pick it up.
+
+**Result:** 15 of 15 accepted on the first attempt, 15 calls, 12,226 tokens in
+and 1,340 out, $0.0026. Only one answer actually used the phrase the old guard
+refused: harness row 35 wrote "They do not have phone service", which the old
+guard would have rejected. The other three formerly rejected customers were
+worded differently this time ("they do not have an online security add-on"),
+so they did not reach the fixed code; temperature 0 and a fixed seed did not
+reproduce the saved wording, so those three are covered by the replay of the
+saved replies in the previous entry, not by this run. The four customers whose
+factors also list internet service type were already allowed to say "internet
+service". All 15 summaries were read by the assistant against their factors:
+directions match, and each "much" sits on a factor whose comparison says
+"much".
+
+**Why:** Requested by the user ("check the new guard on 15 customers. include
+the 5 which failed").
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Run once, by the assistant. Not committed (nothing to
+commit). Cumulative live spend is about $0.18 of the $0.50 cap.

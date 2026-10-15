@@ -322,9 +322,12 @@ What to say:
 - **300 customers, each a different question.** The test set's 1,405 customers
   produce only 528 distinct inputs to the language model; 300 of those were
   sampled, including all 33 at "very high" risk.
-- **The guards refused 2 of 300 first answers**, and one customer ended with
-  no summary. Limits: 5% and 1%.
-- **Six code checks then read the 299 accepted summaries** for what the guards
+- **The guards refuse none of the 300 answers today.** On the day they refused
+  2 first answers and left one customer with no summary, all for the same
+  false alarm: a correct "they do not have phone service" or "no internet
+  service" taken for an invented fact. Fixed on 2026-10-15; the report shows
+  today's guards, so it reads 0. Limits: 5% and 1%.
+- **Six code checks then read the accepted summaries** for what the guards
   do not look at. They found 2 that name the factors out of order and 2 that
   claim a strength the data never gave ("significantly increases their
   risk"). Nothing else. The limit is 2% for each.
@@ -366,7 +369,7 @@ It never calls the API, so re-run it as often as you like.
 uv run pytest -q
 ```
 ```
-777 passed, 1 skipped, 10 deselected
+788 passed, 1 skipped, 10 deselected
 ```
 
 The 10 deselected are the live tests that cost money. They are excluded by

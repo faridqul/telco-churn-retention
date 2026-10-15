@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pytest
 
+import config
 import explain
 import narrate
 import narration_cache
@@ -661,6 +662,102 @@ def test_a_field_named_inside_a_factors_own_label_is_licensed():
 def test_licensing_extends_only_to_what_the_labels_actually_say(payload):
     output = reply(summary="Their lack of online security is what drives this.")
     assert verdict(output, payload) == "unlisted_field"
+
+
+# The exact summaries the guard used to reject: the 300-customer run
+# (2026-10-12) and the two 50-customer runs. All three are correct.
+NO_PHONE_SUMMARY = (
+    "This customer has a high risk of leaving due to their month-to-month "
+    "contract, which raises their risk, and they do not have phone service, "
+    "which also raises their risk. Their DSL internet service lowers their risk."
+)
+NO_INTERNET_SUMMARY = (
+    "This customer has a month-to-month contract, which raises their risk of "
+    "leaving. They do not have internet service for online security, which "
+    "lowers their risk."
+)
+
+
+def no_service_payload(field, value):
+    return payload_for([
+        ("contract", "Month-to-month", 0.5953),
+        ("internetservice", "DSL", -0.2000),
+        (field, value, 0.1500),
+    ])
+
+
+def test_no_phone_service_licenses_phone_service():
+    """'No phone service' is a value of multiplelines that names phoneservice.
+    Repeating it is not an invented fact."""
+    payload = no_service_payload("multiplelines", "No phone service")
+    output = reply(
+        summary=NO_PHONE_SUMMARY,
+        reasons=(("contract", "raises risk"), ("internetservice", "lowers risk"),
+                 ("multiplelines", "raises risk")),
+    )
+    assert verdict(output, payload) is None
+
+
+def test_no_internet_service_licenses_internet_service():
+    payload = payload_for([
+        ("contract", "Month-to-month", 0.5953),
+        ("onlinesecurity", "No internet service", -0.1500),
+    ])
+    output = reply(
+        summary=NO_INTERNET_SUMMARY,
+        reasons=(("contract", "raises risk"), ("onlinesecurity", "lowers risk")),
+    )
+    assert verdict(output, payload) is None
+
+
+@pytest.mark.parametrize("field", [
+    "onlinesecurity", "onlinebackup", "deviceprotection",
+    "techsupport", "streamingtv", "streamingmovies",
+])
+def test_every_add_on_licenses_internet_service(field):
+    payload = payload_for([
+        ("contract", "Month-to-month", 0.5953),
+        (field, "No internet service", -0.1500),
+    ])
+    output = reply(
+        summary="They are on a month-to-month contract, which raises their "
+                "risk, and have no internet service, which lowers it.",
+        reasons=(("contract", "raises risk"), (field, "lowers risk")),
+    )
+    assert verdict(output, payload) is None
+
+
+def test_phone_service_is_still_unlisted_when_no_value_says_it(payload):
+    """The license comes from the value being given, not from the phrase."""
+    output = reply(summary="They do not have phone service and are on a "
+                           "month-to-month contract.")
+    _, rejection_type, detail = narrate.validate_narrative(output, payload)
+    assert rejection_type == "unlisted_field"
+    assert "phoneservice" in detail
+
+
+def test_a_plain_no_licenses_nothing():
+    """multiplelines = 'No' names no other field, so phone service stays
+    unlisted."""
+    payload = no_service_payload("multiplelines", "No")
+    output = reply(
+        summary=NO_PHONE_SUMMARY,
+        reasons=(("contract", "raises risk"), ("internetservice", "lowers risk"),
+                 ("multiplelines", "raises risk")),
+    )
+    assert verdict(output, payload) == "unlisted_field"
+
+
+def test_the_licensed_values_are_the_only_ones_naming_another_field():
+    """If the data ever gains another value like these, this fails, and it
+    belongs in VALUE_LICENSES."""
+    naming_another = {
+        value: other
+        for field, values in config.CATEGORICAL_DOMAINS.items()
+        for value in values
+        for other in narrate.fields_mentioned(str(value)) - {field}
+    }
+    assert naming_another == narrate.VALUE_LICENSES
 
 
 def test_rejects_the_probability_as_a_percentage(payload):
