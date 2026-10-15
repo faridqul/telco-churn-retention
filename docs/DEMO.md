@@ -300,9 +300,20 @@ The four values of `meta.status`:
 A started API with no key still serves any summary already in the cache, so
 "leave the key out" doubles as a mode that cannot spend anything.
 
-The Docker image does not contain the explanation layer: there `/explain`
-answers 503 and `/health` reports `"explain_available":false`. `/predict` is
-unaffected.
+The Docker image carries the explanation layer (since 2026-10-15). The key is
+never built into it; pass it from `.env` through `uv`, which strips the quotes
+that docker's own `--env-file` would keep:
+
+```bash
+docker build -t telco-churn .
+uv run --no-sync --env-file .env -- \
+    docker run -p 8000:8000 -e OPENAI_API_KEY -v telco-cache:/data telco-churn
+```
+
+Without `-e OPENAI_API_KEY` the container still answers `/explain` with the
+drivers, and `explanation: null` with `meta.status` `"unavailable"`.
+`telco-cache` is a Docker volume that keeps the summary cache across restarts;
+it is separate from the `data/narration.sqlite3` the local API uses.
 
 ## 5d. How faithful the summaries are (free)
 

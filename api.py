@@ -21,12 +21,11 @@ from feature_engineering_telco import engineer_features
 from contextlib import asynccontextmanager
 
 # The explanation layer is optional, and this is the only place that decides
-# whether it is here. The production image copies in api.py, telco_model.py,
-# config.py and feature_engineering_telco.py and nothing else (see the
-# Dockerfile), so in a container these three modules do not exist -- and
-# /predict, /health and the build-time checks must keep working exactly as
-# they did. An unguarded import would take the whole service down for the
-# sake of an endpoint it can run without.
+# whether it is here. The production image has carried it since 2026-10-15
+# (see the Dockerfile), but a build that leaves these modules out -- the
+# image before then, or any slimmer one -- must still serve /predict, /health
+# and the build-time checks exactly as before. An unguarded import would take
+# the whole service down for the sake of an endpoint it can run without.
 #
 # Only ImportError is caught. A module that is present and broken should fail
 # the start, loudly, rather than be reported as "not installed".

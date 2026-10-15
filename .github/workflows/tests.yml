@@ -124,6 +124,34 @@ jobs:
           echo "$response" | grep -q '"threshold_used":0.4' \
             || { echo "threshold changed"; exit 1; }
 
+      # The explanation layer is in the image. No key is passed, so nothing is
+      # paid for and no summary is written: the expected answer is a 200 with
+      # the same probability as /predict, five drivers, `explanation: null`
+      # and meta.status "unavailable". A 503 here means the layer is missing.
+      - name: Smoke test /explain
+        run: |
+          curl -sf http://127.0.0.1:8000/health | tee /dev/stderr \
+            | grep -q '"explain_available":true' \
+            || { echo "explanation layer missing from the image"; exit 1; }
+          response=$(curl -sf -X POST http://127.0.0.1:8000/explain \
+            -H "Content-Type: application/json" \
+            -d '{"gender":"Female","seniorcitizen":0,"partner":"Yes","dependents":"No",
+                 "tenure":3,"phoneservice":"Yes","multiplelines":"No",
+                 "internetservice":"Fiber optic","onlinesecurity":"No","onlinebackup":"No",
+                 "deviceprotection":"No","techsupport":"No","streamingtv":"Yes",
+                 "streamingmovies":"Yes","contract":"Month-to-month","paperlessbilling":"Yes",
+                 "paymentmethod":"Electronic check","monthlycharges":85.5,"totalcharges":256.5}') \
+            || { echo "/explain did not answer 200"; docker logs telco-churn-ci; exit 1; }
+          echo "$response"
+          echo "$response" | python3 -c '
+          import json, sys
+          r = json.load(sys.stdin)
+          assert r["churn_probability"] == 0.7443000078201294, r["churn_probability"]
+          assert len(r["drivers"]) == 5, r["drivers"]
+          assert r["explanation"] is None, r["explanation"]
+          assert r["meta"]["status"] == "unavailable", r["meta"]
+          print("OK: /explain serves drivers; no key, so no summary.")'
+
       # An unknown category must be rejected before the model is touched. The
       # encoder uses handle_unknown='ignore', so without validation this scores
       # silently and wrongly rather than erroring -- worth confirming the

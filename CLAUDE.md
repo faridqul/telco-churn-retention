@@ -39,7 +39,7 @@ Reading everything else (4 source files + 5 test files + README) is ~16k tokens.
 | `tests/test_artifact.py` | The only tests that open the real `.pkl`. Pins `DUMMY_CUSTOMER`'s score against `model_metadata.json["dummy_customer_score"]`. |
 | `tests/test_input_validation.py` | `validate_input_frame()` + the API's non-finite handling. Asserts `api.Customer`'s Literals and `config.CATEGORICAL_DOMAINS` agree. |
 | `tests/test_faithfulness.py` | The harness, offline. Every check in both directions; the judge's reply validation; the resumable runner; and each way the gate can fail, produced on purpose. Two tests pin the checks against the hand-read runs in `outputs/` and skip when those are absent. An autouse fixture reuses the result for identical cases within one test — without it the 300-case gate tests take over a minute. |
-| `tests/test_explain_api.py` | `/explain`, against the **real** pipeline (`explain_customer()` needs the preprocessor and booster, so `DummyModel` cannot stand in) and a scripted `FakeLLM`. Pins `/explain` == `/predict` on all 50 simulated customers, and imports `api.py` from a directory holding only the image's four modules. |
+| `tests/test_explain_api.py` | `/explain`, against the **real** pipeline (`explain_customer()` needs the preprocessor and booster, so `DummyModel` cannot stand in) and a scripted `FakeLLM`. Pins `/explain` == `/predict` on all 50 simulated customers, and imports `api.py` from a directory holding only the four core modules (the image's layout before 2026-10-15), so a build without the explanation layer still starts. |
 | `docs/AUDIT.md` | 24 known defects (10 moderate, 14 cosmetic) + roadmap. **Local-only — gitignored, not in the repo.** If present, read it before reporting a bug — it's probably already listed. Cited throughout as "AUDIT.md M9" etc.; those citations mean this file. |
 | `docs/` | Reference documents: `DATA_DICTIONARY.txt` (per-feature reference), `fairness_report.txt` (committed output of `fairness_analysis.py --out docs/fairness_report.txt`), `faithfulness_baseline.json` + `faithfulness_report.txt` (committed output of `faithfulness.py baseline`; the baseline is what CI's gate reads), `DEMO.md`, and the local `AUDIT.md`. |
 | `outputs/` | Results of runs, e.g. LLM live runs (`NARRATE_RESULTS=outputs/<name>.json`). **Contents gitignored**; only `.gitkeep` is committed so the folder exists on a clone. |
@@ -235,10 +235,12 @@ number the README publishes. Check these, in order:
 - The tuner is `RandomizedSearchCV`, not Optuna. (`optuna`, `lightgbm` and
   `pyarrow` used to be declared in `pyproject.toml` and imported nowhere;
   they were removed when dependencies were split into groups.)
-- `pyproject.toml` is split three ways: `[project.dependencies]` is the
-  runtime set a container installs, the `dev` group adds pytest/httpx, and
-  the `notebook` group (jupyter, matplotlib, seaborn, shap, kagglehub, scipy)
-  is **not installed by default**. `uv sync` gives 32 packages; re-running
+- `pyproject.toml` is split into the runtime set and four groups:
+  `[project.dependencies]` is what the decision path needs, the `dev` group
+  adds pytest/httpx, `explain` is the OpenAI SDK alone (what the image adds
+  for `/explain`), `llm` is `explain` plus langfuse, and the `notebook` group
+  (jupyter, matplotlib, seaborn, shap, kagglehub, scipy) is **not installed
+  by default**. `uv sync` gives 32 packages; re-running
   the notebook needs `uv sync --group notebook`. Don't add a training-only
   package to `[project.dependencies]`.
 - Notebook cell 2 uses `warnings.simplefilter('once')`, not a blanket
@@ -290,14 +292,16 @@ images would erode.
 - **Never train in the build.** The artifact is committed and
   byte-reproducible; it is `COPY`d in. Training needs the `notebook` group,
   which the image deliberately doesn't install.
-- **`uv sync --frozen --no-dev`** — 24 installed distributions on Linux, vs 32
+- **`uv sync --frozen --no-dev --group explain`** — 30 installed
+  distributions on Linux (24 before the `explain` group, 2026-10-15), vs 32
   for a plain `uv sync`. `--no-dev` verified safe by import audit: no runtime
   module imports pytest or httpx. `--frozen` makes lockfile drift a build
   failure, matching CI.
 - **The nvidia trim is deliberate and load-bearing.** `xgboost` hard-depends
   on `nvidia-nccl-cu13` on Linux — 288 MB of GPU training libraries a CPU
   inference container never calls. The builder stage deletes the payload,
-  taking the image from 858 MB to 570 MB. It **fails the build if it finds
+  taking the image from 858 MB to 570 MB (593 MB since the explanation layer
+  was added, measured with `du -sx /`). It **fails the build if it finds
   nothing to delete**, so the trim can never silently become a no-op. Don't
   "fix" this by switching to `xgboost-cpu`: `check_model_environment.py`
   resolves via `importlib.metadata.version("xgboost")`, which raises
@@ -322,13 +326,33 @@ images would erode.
   handling) default to `/data` **inside the image only** — the module defaults
   remain the repo-relative filenames. Mounting a host dir at `/data` shadows
   the sample CSV baked in; that's intended.
-- **The explanation layer is not in the image either** (`explain.py`,
-  `narrate.py`, `narration_cache.py`, `llm_tracing.py`, `prompts/`, the `llm`
-  group). `api.py` imports it optionally, so the container serves `/predict`
-  as before, `/explain` answers 503 and `/health` reports
-  `explain_available: false`. Verified by building and running the image on
-  2026-10-09. Adding it means those `COPY` lines, the `llm` group in the sync,
-  and pointing `NARRATION_DB` at `/data`, the only writable path.
+- **The explanation layer is in the image since 2026-10-15** (user's
+  request): `explain.py`, `narrate.py`, `narration_cache.py`, `llm_tracing.py`,
+  `prompts/explanation_v5.txt` only, and the `explain` group (the OpenAI SDK).
+  Not langfuse: `llm_tracing.py` ships because `narrate.py` imports it, but it
+  imports langfuse lazily and `/explain` never traces, so `import langfuse`
+  fails in the container by design. `NARRATION_DB=/data/narration.sqlite3`,
+  because `/data` is the only path appuser can write. Keep the cache across
+  restarts with a **named volume** (`-v telco-cache:/data`), which Docker
+  creates owned by appuser. Not a bind mount of the repo's `data/`: it is
+  owned by the host user (uid 1000, mode 775), so appuser (uid 10001) can read
+  the cache there but never write it — measured 2026-10-15 — and every new
+  customer would be a paid call on every request.
+- **The key is never in the image.** Run with
+  `uv run --no-sync --env-file .env -- docker run -p 8000:8000 -e OPENAI_API_KEY -v telco-cache:/data telco-churn`.
+  Not `docker run --env-file .env`: docker keeps the quotes around a quoted
+  value, so the key arrives as `"sk-..."` and every call fails. Without a key
+  the container answers `/explain` with drivers and `explanation: null`.
+- **Bumping the prompt means editing the Dockerfile's prompt `COPY` line.**
+  Only the current prompt is copied. A third build-time check imports the
+  layer, reads the prompt and finds the SDK, so a forgotten line fails the
+  build instead of every request. It earned its place on the first build:
+  `COPY --chmod=0644` into a new `prompts/` created that directory 0644, which
+  appuser cannot enter. Hence the `install -d -m 0755` line before it.
+- **CI's `docker` job smoke-tests `/explain` too**, with no key, so it costs
+  nothing: `/health` must say `explain_available: true`, and `/explain` must
+  return 200 with `/predict`'s probability, five drivers, `explanation: null`
+  and `meta.status` `unavailable`.
 - **`campaign_profit.py` is deliberately not in the image.** Neither entrypoint
   imports it; the threshold its formula chose is already in
   `model_metadata.json`. If an endpoint ever needs `break_even_threshold()`,
@@ -386,11 +410,13 @@ always present), `explanation` (the language model's accepted answer, or
   `error` (the upstream call failed). The numbers are true in all four. Only a
   missing model, or a build without the explanation layer, is a 503.
 - **The explanation layer is an optional import in `api.py`**, guarded by
-  `try/except ImportError`. The Docker image does not contain `explain.py`,
-  `narrate.py` or `narration_cache.py`; there `/explain` answers 503 and
-  `/predict` is untouched. Don't turn that into a plain import — it takes the
-  container down at startup. `tests/test_explain_api.py` runs `api.py` from a
-  directory laid out like the image to catch exactly that.
+  `try/except ImportError`. The image carries the layer now, but a build
+  without `explain.py`, `narrate.py` or `narration_cache.py` must still start:
+  `/explain` answers 503 and `/predict` is untouched. Don't turn that into a
+  plain import — it would take such a build down at startup.
+  `tests/test_explain_api.py` runs `api.py` from a directory holding only the
+  four core modules to catch exactly that; the image's own build-time check
+  makes sure the layer is actually there.
 - **`/explain` scores through the same `_score()` as `/predict`**, then checks
   the explanation's probability and decision against it with `==` and returns
   a 500 rather than reasons for a different number. Keep both halves: the

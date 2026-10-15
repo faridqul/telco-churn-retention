@@ -41,6 +41,15 @@ dev = [
 # keys are set. Install with `uv sync --group llm`.
 llm = [
     "langfuse>=4.15",
+    { include-group = "explain" },
+]
+
+# What the Docker image needs to SERVE /explain: the OpenAI SDK and nothing
+# else. Split out of `llm` so the image does not ship langfuse and its ~20
+# OpenTelemetry/protobuf/requests dependencies -- /explain is not traced, so
+# nothing in the container would ever import them. `llm` includes this group,
+# so `uv sync --group llm` is unchanged.
+explain = [
     "openai>=1.0.0",
 ]
 

@@ -11,6 +11,16 @@
 #
 #   docker build -t telco-churn .
 #   docker run -p 8000:8000 telco-churn                  # API (default CMD)
+#
+#   # API with written summaries on /explain. The key comes from the host,
+#   # never the image; uv loads .env (and strips its quotes, which docker's own
+#   # --env-file would keep as part of the key). telco-cache is a named
+#   # volume: it keeps the summary cache across restarts, and Docker creates
+#   # it owned by appuser. Not "$PWD/data:/data" -- that folder belongs to the
+#   # host user, so appuser could read the cache but never write to it.
+#   uv run --no-sync --env-file .env -- \
+#       docker run -p 8000:8000 -e OPENAI_API_KEY -v telco-cache:/data telco-churn
+#
 #   docker run telco-churn python telco_model.py         # batch, shipped sample CSV
 #   docker run -v "$PWD/data:/data" telco-churn python telco_model.py   # batch, your CSV
 #
@@ -60,8 +70,12 @@ COPY pyproject.toml uv.lock ./
 # Linux. Verified by import audit: no runtime module -- api.py, telco_model.py,
 # config.py, feature_engineering_telco.py, check_model_environment.py --
 # imports either. A production image has no business shipping a test runner.
+#
+# --group explain adds the OpenAI SDK for /explain's written summary, and only
+# that: the `explain` group is `llm` minus langfuse, so the ~20 tracing
+# packages that /explain never imports stay out.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-install-project
+    uv sync --frozen --no-dev --group explain --no-install-project
 
 # xgboost declares nvidia-nccl-cu13 as a hard dependency on Linux. It is
 # 288 MB -- larger than xgboost, pandas and scikit-learn combined -- and it
@@ -129,6 +143,26 @@ COPY --from=builder /app/.venv /app/.venv
 COPY --chmod=0644 api.py telco_model.py config.py feature_engineering_telco.py ./
 COPY --chmod=0644 check_model_environment.py ./
 
+# The explanation layer behind /explain: the model's drivers (explain.py), the
+# written summary and its guards (narrate.py), and the summary cache.
+# llm_tracing.py ships only because narrate.py imports it at module level; it
+# imports langfuse lazily and /explain never hands it a tracer, so langfuse is
+# not installed. api.py imports these optionally -- left out, /explain answers
+# 503 and nothing else changes.
+COPY --chmod=0644 explain.py narrate.py narration_cache.py llm_tracing.py ./
+
+# The one prompt narrate.py loads, named rather than copying prompts/: the
+# folder also holds old versions and the judge's prompts, which nothing here
+# reads. Bumping the prompt therefore means editing this line, and the
+# build-time check below fails the build until someone does.
+#
+# The folder is made first, 0755, on purpose. Left to COPY, BuildKit creates
+# it with the --chmod given for the file, 0644 -- a directory appuser cannot
+# enter -- and the image built clean, started, and then failed reading the
+# prompt. The build-time check below caught exactly that on 2026-10-15.
+RUN install -d -m 0755 /app/prompts
+COPY --chmod=0644 prompts/explanation_v5.txt ./prompts/
+
 # The artifact. Committed and byte-reproducible, so copying it is what makes
 # a built image and a fresh clone agree on every prediction.
 COPY --chmod=0644 xgboost_churn_pipeline.pkl model_metadata.json ./
@@ -154,8 +188,14 @@ COPY --chmod=0644 --chown=appuser:appuser simulated_new_customers.csv /data/
 # defaults resolve relative to WORKDIR /app, and writing the output there
 # fails with PermissionError under the non-root user -- correctly, since /app
 # is meant to be read-only. Overridable per-run for any other layout.
+#
+# The summary cache goes there too. Its default, data/narration.sqlite3 under
+# /app, is not writable by appuser; narration_cache would warn and fall back
+# to no cache, and every /explain request would become a paid call. A named
+# volume at /data keeps the cache across container restarts.
 ENV INPUT_PATH=/data/simulated_new_customers.csv \
-    OUTPUT_PATH=/data/retention_campaign_targets.csv
+    OUTPUT_PATH=/data/retention_campaign_targets.csv \
+    NARRATION_DB=/data/narration.sqlite3
 
 USER appuser
 
@@ -190,6 +230,18 @@ assert abs(actual - expected) < 1e-9, (
     f"artifact smoke test failed: DUMMY_CUSTOMER scored {actual!r}, "
     f"model_metadata.json records {expected!r}")
 print(f"OK: artifact loads and reproduces dummy_customer_score ({actual}).")
+PY
+
+# The explanation layer is present and whole. api.py's optional import would
+# otherwise turn a missing module into a quiet 503 at run time; this makes it a
+# build failure. Also proves the prompt narrate.py names was copied in, and
+# that the OpenAI SDK installed -- without making a call, so no key is needed.
+RUN python - <<'PY'
+import importlib.util, api, narrate
+assert api.EXPLAIN_LAYER_PROBLEM is None, api.EXPLAIN_LAYER_PROBLEM
+assert narrate.load_prompt(), f"{narrate.PROMPT_PATH} is empty"
+assert importlib.util.find_spec("openai"), "openai is not installed"
+print(f"OK: explanation layer present ({narrate.PROMPT_VERSION}).")
 PY
 # -----------------------------------------------------------------------------
 

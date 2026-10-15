@@ -7415,3 +7415,170 @@ the 5 which failed").
 
 **Verification status:** Run once, by the assistant. Not committed (nothing to
 commit). Cumulative live spend is about $0.18 of the $0.50 cap.
+
+## 2026-10-15 — The explanation layer goes into the Docker image
+
+**Files touched:**
+- `Dockerfile`
+- `pyproject.toml`
+- `uv.lock`
+- `.github/workflows/tests.yml`
+- `api.py`
+- `tests/test_explain_api.py`
+
+**What changed:**
+
+`Dockerfile`: the image now copies `explain.py`, `narrate.py`,
+`narration_cache.py` and `llm_tracing.py` (`narrate.py` imports it at module
+level), plus the one prompt `narrate.py` loads, `prompts/explanation_v5.txt`.
+The sync installs the new `explain` dependency group. `NARRATION_DB` points
+the summary cache at `/data/narration.sqlite3`, because `/data` is the only
+path the non-root user can write. A third build-time check imports the layer,
+reads the prompt and confirms the OpenAI SDK is installed, without making a
+call. The header comment shows how to run with a key: through
+`uv run --env-file .env`, passing `-e OPENAI_API_KEY`.
+
+That check failed the first build, and it was right. `COPY --chmod=0644` into a
+`prompts/` folder that did not exist yet created the folder with mode 0644,
+which the non-root user cannot enter. The image would have started and passed
+its health check, and every `/explain` call would then have failed reading the
+prompt. The folder is now created first with `install -d -m 0755`.
+
+`pyproject.toml` and `uv.lock`: a new `explain` group holding only `openai`.
+`llm` now includes it (`{ include-group = "explain" }`) plus langfuse, so
+`uv sync --group llm` installs exactly what it did before. The re-lock added
+four lines of group metadata and changed no package version. The `llm` group
+would have added 26 packages to the image (langfuse brings OpenTelemetry,
+protobuf, requests and more); `explain` adds 6. langfuse is never used in the
+container, because `/explain` is not traced.
+
+`.github/workflows/tests.yml`: the `docker` job gains a "Smoke test /explain"
+step. It runs with no key, so it costs nothing. `/health` must report
+`explain_available: true`, and `/explain` must return 200 with the pinned
+probability 0.7443000078201294, five drivers, `explanation: null` and
+`meta.status` "unavailable".
+
+`api.py`: only the comment above the optional import, which said the image
+does not carry the layer. The `try/except ImportError` itself is unchanged and
+still needed, so a build without the layer keeps serving `/predict`.
+
+`tests/test_explain_api.py`: the test that imports `api.py` from a directory
+holding only the four core modules no longer claims that layout is the image.
+It was renamed to `test_api_starts_and_predicts_without_the_explanation_layer`
+(constants `IMAGE_MODULES`/`IMAGE_SCRIPT` became `CORE_MODULES`/`CORE_SCRIPT`),
+and the module docstring's item 5 was reworded. Its assertions are unchanged.
+
+**Why:** Requested: "include the /explain in the image". The user may put the
+project online, and a hosting service runs the image, where `/explain`
+answered 503.
+
+**Requested or incidental:** The image change, the dependency group and the
+CI step are requested. The `api.py` comment and the test renaming are
+incidental: both described the old image.
+
+**Verification status:**
+- **Build:** `docker build` succeeds with all three build-time checks printing
+  OK.
+- **Size and contents** (`du -sx /`): 593 MB with 30 distributions, against
+  570 MB and 24 in the previous image. `import langfuse` fails in the
+  container, as intended. `/app/prompts` is 0755 and the prompt 0644.
+- **Container without a key:** healthy; `/health` reports
+  `explain_available: true` and `narration_available: false`; `/predict` 200;
+  `/explain` 200 with probability 0.7443000078201294, 5 drivers, no summary,
+  status "unavailable".
+- **The new CI step:** its script was pulled out of the workflow file and run
+  as written against a local container; it printed OK.
+- **Container with a key** (via `uv run --env-file .env -- docker run -e
+  OPENAI_API_KEY`, with `/data` mounted): the first `/explain` made 1 paid call
+  (status ok, 3.8 s, about $0.0002). The repeat was a cache hit in 0.03 s, and
+  `narration.sqlite3` appeared in the mounted folder, owned by uid 10001.
+  Checking `.env` showed the key is quoted, which is why `docker run
+  --env-file .env` was not used.
+- **Batch scorer through the new image:** "15 of 50 customers flagged",
+  output written to the mounted folder.
+- **Tests:** `uv run pytest -q` 788 passed, 1 skipped, 10 deselected.
+  `uv lock --check` is clean.
+- **Not verified:** the `docker` job on GitHub Actions, which needs a push.
+- **Not committed.**
+
+## 2026-10-15 — Docs: the image now carries the explanation layer
+
+**Files touched:**
+- `CLAUDE.md`
+- `README.md`
+- `docs/DEMO.md`
+
+**What changed:**
+
+`CLAUDE.md`:
+- **Docker section:** the bullet "The explanation layer is not in the image
+  either" is replaced by four bullets: what the image carries and why langfuse
+  is absent; how to pass the key and why not `docker run --env-file`; that a
+  prompt bump means editing the Dockerfile's prompt line, and the 0644
+  directory defect the build-time check caught; and the new CI smoke test.
+  The `uv sync` bullet now reads 30 distributions with `--group explain`, and
+  the nvidia-trim bullet notes 593 MB since the layer was added.
+- **`/explain` section:** the optional-import bullet no longer says the image
+  lacks the layer, and says what each of the two checks covers.
+- **Conventions:** the `pyproject.toml` bullet lists the four groups, including
+  `explain`.
+- **Layout table:** the `tests/test_explain_api.py` row says the four-module
+  directory is the image's layout before 2026-10-15.
+
+`README.md`, Docker "Size" paragraph: 593 MB and 30 distributions, what the
+`explain` group adds, and the earlier 570 MB / 24 for comparison. The trim
+sentence now says its 858 → 570 MB was measured on the image as it was then.
+
+`docs/DEMO.md`, section 5c: the paragraph saying the image answers `/explain`
+with 503 is replaced by the build and run commands with the key, and what
+happens without one.
+
+**Why:** All three described the image as lacking the layer.
+
+**Requested or incidental:** Incidental — documentation of the requested
+image change. Editing `CLAUDE.md` is logged here as the convention requires.
+
+**Verification status:** Every replaced passage was matched exactly once
+before replacing. The figures come from the measurements in the previous
+entry. Not committed.
+
+## 2026-10-15 — Correction: run the image with a named volume, not the repo's data/ folder
+
+**Files touched:**
+- `Dockerfile` (comments only)
+- `CLAUDE.md`
+- `docs/DEMO.md`
+
+**What changed:**
+
+The two entries above recommended running the API image with
+`-v "$PWD/data:/data"` to keep the summary cache. That was wrong, and the
+mistake was the assistant's. The repo's `data/` folder belongs to the host user
+(uid 1000, mode 775), and `data/narration.sqlite3` is 644. The container runs
+as appuser (uid 10001), so it can read the cache there but can neither write
+the file nor create files in the folder. Every new customer would be a paid
+call, on every request.
+
+The earlier with-key test did not catch this because it mounted a scratch
+folder set to mode 777.
+
+The run command in all three files now uses a named volume,
+`-v telco-cache:/data`. Docker creates a named volume owned by the image's
+`/data` owner (appuser) and copies the sample CSV into it on first use.
+`CLAUDE.md` says why the bind mount does not work. `docs/DEMO.md` notes that
+the volume is a separate cache from the local `data/narration.sqlite3`.
+
+**Why:** Found while answering the user's question about where `/data` lives.
+
+**Requested or incidental:** Incidental — a correction of the assistant's own
+documentation from earlier the same day.
+
+**Verification status:**
+- **The problem:** with `-v "$PWD/data:/data"`, `os.access` inside the
+  container reports `/data` not writable, the cache file not writable, and
+  readable.
+- **The fix:** with a named volume, `/data` is writable, `narration_cache`
+  returns a real `Cache` (not the no-op), and the volume holds
+  `narration.sqlite3` and `simulated_new_customers.csv`. The test volume was
+  removed afterwards.
+- No paid calls. Not committed.

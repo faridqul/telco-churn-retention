@@ -714,14 +714,16 @@ image would otherwise have built clean and died on its first request with
 `PermissionError` on `config.py`. The `COPY --chmod=0644` in the Dockerfile is
 the fix.
 
-**Size.** 570 MB. Dependencies come from the runtime group plus `--no-dev`, so
-neither the training stack (jupyter, matplotlib, seaborn, shap, kagglehub,
-scipy) nor the test runner ships — 24 installed distributions, against the 32
-that `uv sync` gives a developer. The single largest remaining item was not a
+**Size.** 593 MB. Dependencies come from the runtime group plus `--no-dev`
+and the `explain` group (the OpenAI SDK alone, for `/explain`), so neither the
+training stack (jupyter, matplotlib, seaborn, shap, kagglehub, scipy), the
+tracing SDK nor the test runner ships — 30 installed distributions, against
+the 32 that `uv sync` gives a developer. Before the explanation layer was
+added on 2026-10-15 it was 570 MB and 24. The single largest remaining item was not a
 project dependency at all: `xgboost` hard-depends on
 `nvidia-nccl-cu13` on Linux, 288 MB of GPU distributed-training libraries a
 CPU inference container never calls. Removing that payload in the builder
-stage takes the image from 858 MB to 570 MB. It is done there rather than by
+stage removes it, taking the image (as it was then) from 858 MB to 570 MB. It is done there rather than by
 switching to the `xgboost-cpu` distribution because `check_model_environment.py`
 resolves versions through `importlib.metadata.version("xgboost")`, which
 raises `PackageNotFoundError` under that package and would fail the gate — and

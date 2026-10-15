@@ -25,10 +25,11 @@ is pinned here, weighted toward the failures that would be silent:
      up as nothing at all except a bill. The test goes through TestClient for
      exactly that reason.
 
-  5. THE CONTAINER STILL STARTS. The image holds api.py, config.py and
-     feature_engineering_telco.py and none of explain.py, narrate.py or
-     narration_cache.py. The last test imports api.py from a directory laid
-     out that way.
+  5. A BUILD WITHOUT THE LAYER STILL STARTS. The Docker image carried only
+     api.py, config.py, feature_engineering_telco.py and telco_model.py until
+     2026-10-15, and any slimmer build may again. The last test imports api.py
+     from a directory laid out that way. (The image itself now carries the
+     layer; its build-time check and CI's /explain smoke test cover that.)
 
 The churn model here is the real committed pipeline -- explain_customer()
 needs its preprocessor and booster, so DummyModel cannot stand in -- and the
@@ -741,16 +742,16 @@ def test_the_stand_in_client_raises_only_when_asked_to_complete():
 
 
 # ==========================================================================
-# 11. The container's module set
+# 11. A build without the explanation layer
 # ==========================================================================
 
-IMAGE_MODULES = ("api.py", "config.py", "feature_engineering_telco.py", "telco_model.py")
+CORE_MODULES = ("api.py", "config.py", "feature_engineering_telco.py", "telco_model.py")
 
-IMAGE_SCRIPT = """
+CORE_SCRIPT = """
 import json, sys
 import api
 assert api.explain is None and api.narrate is None and api.narration_cache is None, \\
-    "the explanation layer was importable; this test is not simulating the image"
+    "the explanation layer was importable; this test is not simulating a build without it"
 from fastapi.testclient import TestClient
 customer = json.loads(sys.argv[1])
 with TestClient(api.app) as client:
@@ -765,10 +766,11 @@ print(json.dumps({
 """
 
 
-def test_api_starts_and_predicts_with_only_the_images_modules(tmp_path, pipeline):
-    """The Dockerfile copies four modules and the artifact. In that layout
-    `import explain` fails -- and must cost /explain, not the service."""
-    for name in IMAGE_MODULES:
+def test_api_starts_and_predicts_without_the_explanation_layer(tmp_path, pipeline):
+    """Four modules and the artifact, as the image held before 2026-10-15. In
+    that layout `import explain` fails -- and must cost /explain, not the
+    service."""
+    for name in CORE_MODULES:
         shutil.copy(REPO_ROOT / name, tmp_path / name)
     environment = {
         key: value for key, value in os.environ.items()
@@ -777,7 +779,7 @@ def test_api_starts_and_predicts_with_only_the_images_modules(tmp_path, pipeline
     environment["MODEL_PATH"] = str(REPO_ROOT / "xgboost_churn_pipeline.pkl")
     environment["METADATA_PATH"] = str(REPO_ROOT / "model_metadata.json")
     completed = subprocess.run(
-        [sys.executable, "-c", IMAGE_SCRIPT, json.dumps(VALID_PAYLOAD)],
+        [sys.executable, "-c", CORE_SCRIPT, json.dumps(VALID_PAYLOAD)],
         cwd=tmp_path, env=environment, capture_output=True, text=True, timeout=120,
     )
     assert completed.returncode == 0, completed.stderr
