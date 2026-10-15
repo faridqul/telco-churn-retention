@@ -7699,3 +7699,35 @@ mention the fairness analysis at all.
 `fairness_analysis.BOOTSTRAP_DRAWS`. That every precision interval includes
 zero was checked against the report's six precision lines. Code fences were
 checked to be closed. Not committed.
+
+## 2026-10-16 — LLMcalls.ipynb re-executed against the 300-customer run
+
+**Files touched:**
+- `LLMcalls.ipynb`
+
+**What changed:** Outputs only. No cell's source changed (checked cell by
+cell against the committed version). The notebook opens the newest saved run,
+which is now `outputs/harness_v5.json`, so it shows 300 customer cards, and
+the file grew from 476 KB to 1.4 MB.
+
+The user had already re-run it, and those uncommitted outputs ended in a
+`KeyError: 'attempts'` in the last cell, the cross-run comparison. That run
+happened while the judge's verdict files were still in `outputs/`, where the
+notebook reads every `*.json` as a saved run. They have since moved to
+`outputs/judge/`, so the assistant re-executed the notebook with
+`jupyter nbconvert --execute --inplace`. Before that, the user's copy was
+saved to the scratch directory.
+
+**Why:** Requested: "check the LLMcalls. if it looks clean, push too". As
+found, it was not clean (one error output). Re-running is what made it clean.
+
+**Requested or incidental:** Requested. Re-executing rather than committing
+the user's outputs as they were is the assistant's choice, made because only
+outputs differed and the user's version contained the error.
+
+**Verification status:**
+- The re-executed notebook has no error outputs, no stderr, no API keys and
+  no local paths, and execution counts run 1–13 in order.
+- It ran with `OPENAI_API_KEY` and the Langfuse keys unset, so it could not
+  have made a call, and it makes none by design.
+- To be committed and pushed in this step.
