@@ -7,6 +7,11 @@ Predicts which customers are likely to churn, and — more importantly — decid
 economics of that campaign. The operating threshold isn't chosen by accuracy
 or F1; it's chosen by maximizing expected campaign profit on held-out data.
 
+Each decision can also be explained in plain English: the model's own drivers
+for that customer, put into two or three sentences by a language model whose
+every reply is checked against what it was given before anyone sees it, and
+whose faithfulness is measured on 300 customers and gated in CI.
+
 ## Dataset
 
 [Telco Customer Churn](https://www.kaggle.com/datasets/blastchar/telco-customer-churn)
@@ -489,6 +494,250 @@ Three findings worth drawing out:
 churn, is the familiar pattern of a premium tier that costs more and
 under-delivers; worth flagging to whoever owns that product line.
 
+## Explaining one customer in plain English
+
+The Interpretability section describes the model as a whole. A retention
+agent about to call someone needs the reasons for *that* customer, in words.
+`POST /explain` returns the same decision as `/predict`, the model's five
+strongest drivers for this customer, and a two-to-three sentence summary
+written by a language model (`gpt-4o-mini`). Because a language model writes
+it, most of this section is about what it is *not* allowed to do.
+
+```
+explain.py     →  narration_payload()  →  language model  →  validate_narrative()
+exact SHAP        what it may be told       one call          nine checks on
+                                                              every reply
+```
+
+Everything except the middle step is deterministic code. The language model
+never sees the customer's row and never computes anything, and nothing it
+writes reaches a reader until it has been checked against what it was given.
+
+**The reasons come from the churn model, not the language model.**
+`explain.py` takes XGBoost's own `pred_contribs`, the same exact tree-SHAP
+values the notebook gets from `shap.TreeExplainer`. It uses XGBoost rather
+than `shap` because XGBoost is already a runtime dependency, so the serving
+path gained no new package. Tree SHAP is additive: the contributions plus a bias
+term sum to the model's margin. That identity is checked on every
+explanation, and a driver list that does not reconstruct the model's own
+probability is refused. `/explain` then compares the probability and decision
+against `/predict`'s own scoring with `==`, and returns a 500 rather than
+reasons for a different number.
+
+**What the language model is told is deliberately less than it could be:**
+
+- **Three factors, chosen after protected attributes are removed.**
+  `gender`, `seniorcitizen`, `partner`, `dependents` and `family_tie` (derived
+  from the last two) can be genuine top drivers, and the attribution still
+  reports them. But "she is a senior citizen" must never reach a person as a
+  reason to make a call. Filtering happens before the top three are picked,
+  so a protected driver cannot use up a slot, and `/explain` names anything
+  it left out.
+- **A risk band, not the probability.** The bands are low, moderate, high and
+  very high, cut at 0.20 / 0.40 / 0.70. They are set relative to the
+  threshold with the same `>=`, so "high" and "very high" are exactly the
+  targeted customers. The score is uncalibrated (see above), and the first
+  prompt version quoted it back as "61.51%".
+- **Each value with a comparison in words**, such as "much lower than most
+  customers", measured in training standard deviations from the median. The
+  first live run described a customer who had paid $5,762.95, about four
+  times the median, as having "a lower total charged to date". Given the
+  comparison, the model has nothing left to guess. Engineered values like
+  `contractvstenure` get the comparison and never the number, so there is no
+  meaningless figure to quote.
+
+It replies in strict JSON (`risk_level`, `reasons[{field, direction}]`,
+`summary`), so the structured part is checked exactly, with no text matching.
+
+**Nine checks run before a summary is shown.** Any one rejects the reply.
+One retry is allowed. The correction names the rule that was broken and never
+suggests wording: telling the model what to say would let a retry turn an
+invented reason into an accepted answer.
+
+| Check | Rejects |
+|---|---|
+| `empty_output`, `malformed_output` | no reply, or not the JSON shape asked for |
+| `overlong_output` | a summary over 400 characters (about 60 words are asked for) |
+| `protected_attribute` | a protected attribute named anywhere, gendered pronouns included |
+| `unlisted_field` | a reason or a mention of any field outside the three given |
+| `hallucinated_number` | a number that is not one of the given values (rounding allowed) |
+| `decision_contradiction` | a risk level, or "low/high risk" wording, that disagrees with the band |
+| `commentary` | remarks on the decision itself, or speaking in the first person |
+| `misstated_factor` | a direction, or a higher/lower, that disagrees with what was given |
+
+### How the prompt got to v5
+
+Each version answers something a live run found, and each run's result is a
+measurement of a specific, hash-pinned prompt file. Editing a prompt in place
+fails a test, so every number below still refers to the exact text that
+produced it.
+
+| Version | What the run before it found | Change |
+|---|---|---|
+| v1 | — | free prose, raw probability included |
+| v2 | quoted the uncalibrated score as "61.51%"; called a total 4× the median "lower" | strict JSON; a band instead of the probability; comparisons sent as words |
+| v3 | 6 of 8 summaries copied "well above typical" verbatim; 7 of 8 commented on the decision ("I agree with the decision") | plainer comparison phrases; the decision is no longer sent, and commenting on it is rejected |
+| v4 | — | written, measured once, deleted: v3 had not been judged yet |
+| v5 | 50 customers on v3, all accepted, read by hand: degrees, motives and weightings it was never given, and factors reordered | four "say only what you were given" rules |
+
+The v3 run is the useful one to look at. All 50 summaries passed every check,
+with not one false statement, and reading them still found the model saying
+more than it was handed. Same 50 customers, same model and seed, only the
+prompt changed:
+
+| Habit | v3 | v5 |
+|---|---|---|
+| a degree it was not given ("*much* lower commitment" when the data said "lower") | 5/50 | **0/50** |
+| a guessed motive ("indicating a lack of loyalty") | 2/50 | **0/50** |
+| weighing factors ("significantly lowers", "outweigh") | 1/50 | **0/50** |
+| factors reordered | 6/50 | **0/50** |
+
+None of the four rules is checked at run time. A degree check and a
+speculation check were built in September and then removed. They rejected
+text that stated nothing false, which cost a retry and sometimes the summary
+itself, over a wording preference. They are measured afterwards instead,
+below.
+
+### How faithful is it, measured on 300 customers?
+
+0 problems in 50 still allows a true rate of about 7% (95% upper bound). So `faithfulness.py`
+measures prompt v5 on 300 inputs instead. The test set's 1,405 customers
+produce only 528 distinct inputs for the language model, because it sees
+three worded factors and a band rather than the whole row. The sample takes
+all 33 very-high-risk inputs and a stratified 267 of the rest. It ran with
+no cache: 302 calls, $0.054, about 13 minutes.
+
+Six code checks then read every accepted summary. They are measurements, not
+guards: nothing is rejected because of them. The limits were fixed from the
+50-customer result before the run existed:
+
+| | Result | Limit |
+|---|---|---|
+| rejected on the first attempt | 0 of 300 | 5% |
+| no summary after the retry | 0 of 300 | 1% |
+| reasons reordered | 0 of 300 | 2% |
+| summary reordered | 2 | 2% |
+| degree overstated | 0 | 2% |
+| speculation | 0 | 2% |
+| weighing | 2 | 2% |
+| direction contradicted | 0 | 2% |
+
+On the day, the checks rejected 2 first answers and left one customer with
+no summary. All three were the same false alarm, and so was the only
+rejection in each 50-customer run. A value can name a different field from
+its own: `multiplelines` = "No phone service", or an add-on = "No internet
+service". The `unlisted_field` check took a correct "they do not have phone
+service" for an invented fact. The fix allows exactly those two values, and
+only when they were given. A test fails if any other value in the data ever
+names a different field. Re-checked against the saved replies, rejections
+fell to 0 in all three runs at no cost, because nothing had to be
+generated again.
+
+Two wording habits are counted and deliberately left alone, because neither
+is false. 237 of 300 summaries (79%) use the refrain "which raises their
+risk". 193 (64%) leave at least one factor's value out of the sentence, or
+word it in a way a text match cannot confirm ("a contract type that reduces
+their risk" instead of "a two-year contract"). Both arrived with v5 as the
+cost of the four rules above, and they are what a v6 would address.
+
+**A second model as a cross-check, and how much it was worth.** A stronger
+model (`gpt-6-luna`) also read the 299 accepted summaries once, answering a fixed
+checklist and quoting the words it objected to. Before that it was scored on
+103 cases with known answers: it caught 55 of 55 planted or known problems
+and flagged 2 of 48 clean summaries. On the real run it flagged 17, which
+were read by hand:
+
+- 2 real, both already counted by the code checks
+- 3 arguable
+- 12 false alarms, 11 of them "due to" taken for a guess
+
+It did find one phrasing the checks had missed ("not enough to offset the
+other factors"), which is now on the weighing list. It is not part of the
+product or the gate: a judge that is wrong in 12 of 17 flags is a second
+opinion, not a test.
+
+**The measurement is a CI gate.** The 300 saved answers and their results
+are committed (`docs/faithfulness_baseline.json`, with the readable
+`docs/faithfulness_report.txt`). A test in the ordinary suite fails in any of
+these cases:
+- the prompt's hash, the model, the seed or the temperature differs from what
+  was measured
+- re-checking the saved answers with today's checks puts any rate over its
+  limit
+- the baseline file is missing
+
+So a prompt change cannot ship unmeasured: CI stays red until it is measured
+again (about $0.05). A change to a check is re-scored against the same 300
+real answers for free.
+
+**Repeats are free.** Accepted summaries are cached in SQLite, keyed by
+exactly what the model was sent plus the model, temperature and seed, with
+one table per prompt version so an old prompt's answer can never be served to
+a new one. Measured in the container: 3.8 s for a new customer, 0.03 s for
+the repeat. A process with no API key still serves what is cached, and
+otherwise returns the drivers with `explanation: null`. The numbers never
+depend on the language model being reachable.
+
+A summary costs about $0.0002. The whole project's live calls (every prompt
+version, the 300-customer run and the judge) came to about $0.18.
+
+## Fairness
+
+`fairness_analysis.py` asks whether the shipped model catches churners
+equally well across groups. Missing a churner is the harm being measured,
+because a retention offer is a benefit. The full output is committed as
+`docs/fairness_report.txt`.
+
+**Nothing is retrained.** The committed pipeline is scored on the test set,
+rebuilt by replaying the notebook's cleaning and split. That rebuild is
+checked rather than assumed: the script refuses to report anything unless the
+confusion matrix reproduces the published 256/179/116/854 exactly. Every gap
+comes with a 95% bootstrap interval (2,000 resamples of the test set). A
+recall estimate's precision depends on how many *churners* a group has, not
+how many customers, so groups are graded by that count. Below 30 churners, no
+rate is reported at all.
+
+| Group | Churn rate | Recall | Gap in recall (95% CI) |
+|---|---|---|---|
+| senior / non-senior | 38.9% / 24.1% | 86.5% / 63.3% | **+23.3 pts** [+14.1, +31.6] |
+| no partner / has partner | 33.0% / 19.3% | 75.3% / 56.6% | **+18.7 pts** [+8.5, +28.8] |
+| no dependents / has dependents | 30.7% / 16.9% | 72.6% / 53.4% | **+19.2 pts** [+6.4, +30.8] |
+| female / male | 28.3% / 24.8% | 70.0% / 67.6% | +2.4 pts [−6.9, +12.4] |
+| manual pay / auto-pay *(income proxy, not protected)* | 34.8% / 16.0% | 76.8% / 47.0% | **+29.8 pts** [+19.1, +40.1] |
+
+Precision shows no significant gap for any group. Senior × gender combines
+additively, with no interaction the one-way checks miss.
+
+**Every gap runs the same way: the group that churns more is caught more.**
+Seniors, customers without a partner or dependents, and manual payers are
+*more* likely to be contacted before they leave, not less. That is what one
+threshold does to groups with different base rates: the model ranks
+higher-risk groups higher, so more of them clear 0.40. The customers being
+missed are churners from the low-risk groups. A churning customer with a
+family is meaningfully less likely to get the offer than one living alone.
+
+**Closing the senior gap costs $220 and gains nothing worth having.** With a
+separate profit-optimal threshold for each group, the test set earns $6,680.
+Adding equal recall drops that to $6,460, and both groups then catch 67.4% of
+their churners. That is $220, 3.3% of the profit. How parity is reached
+matters more than the price: it comes from *raising* the seniors' cutoff from
+0.40 to 0.56, so fewer at-risk seniors get contacted. Equal recall here is
+levelling down.
+
+**Decision: one threshold for everyone, unchanged.** A different cutoff by
+age is treating people differently because of their age, which is what this
+check exists to prevent. The per-group thresholds are a measurement of the
+trade-off, not a proposal. When two groups churn at different rates, equal
+recall, equal precision and equal flag rates cannot all hold at once
+(Chouldechova 2017; Kleinberg, Mullainathan & Raghavan 2016). The report picks
+recall parity and says why, and prints the numbers so that someone who would
+choose differently can.
+
+The same attributes are kept out of the written explanations: they are
+removed before the language model sees anything, and any mention of them is
+rejected (see the explanation section above). The model may use age; a
+summary may never give it as a reason to call someone.
+
 ## Repo structure
 
 ```
@@ -497,7 +746,18 @@ feature_engineering_telco.py  # shared feature logic (single source of truth)
 campaign_profit.py            # the campaign profit formula + break-even threshold,
                                # in one place (was retyped in 7 notebook cells)
 telco_model.py                # batch scoring script (CSV in, CSV out)
-api.py                        # FastAPI service (POST /predict)
+api.py                        # FastAPI service (POST /predict, POST /explain)
+explain.py                    # per-customer drivers: exact tree SHAP from the shipped model
+narrate.py                    # the language-model step: payload, prompt, nine checks, retry
+narration_cache.py            # SQLite cache of accepted summaries, one table per prompt
+llm_tracing.py                # optional Langfuse tracing for command-line narration runs
+faithfulness.py               # the 300-customer measurement and the CI gate on it
+fairness_analysis.py          # per-group recall/precision with bootstrap intervals
+prompts/                      # versioned system prompts, each pinned by its sha256
+LLMcalls.ipynb                # read-only viewer for saved language-model runs
+frontend/index.html           # single static page calling /predict
+docs/                         # data dictionary, fairness and faithfulness reports,
+                               # the committed faithfulness baseline, a demo script
 config.py                     # shared config: threshold loading, feature-schema
                                # validation, artifact paths (env-var overridable)
 tests/
@@ -510,12 +770,20 @@ tests/
   test_input_validation.py    # batch-input domain checks + API non-finite handling
   test_campaign_profit.py     # unit tests for the profit arithmetic
   test_check_model_environment.py  # unit tests for the CI version gate
+  test_explain.py             # attribution reconstructs the model's own probability
+  test_narrate.py             # payload, every check in both directions, retry policy
+  test_explain_api.py         # /explain against the real pipeline and a scripted model
+  test_faithfulness.py        # the harness offline, and the gate on the committed baseline
+  test_narration_cache.py     # keys, expiry, and per-prompt tables
+  test_llm_tracing.py         # tracing against the real SDK, with an in-memory exporter
+  test_fairness_analysis.py   # the fairness report's arithmetic and split reconstruction
+  test_narrate_live.py        # the only tests that call a real model; deselected by default
   conftest.py                 # DummyModel + _FakeJoblib, shared by the API and
                                # batch-script tests so they can't drift apart
 check_model_environment.py    # CI gate: fails the build if installed library versions
                                # don't match the ones that trained the artifact
 pyproject.toml                # dependencies (managed with uv), split into runtime /
-                               # dev / notebook groups
+                               # dev / explain / llm / notebook groups
 .github/workflows/tests.yml   # CI: version gate + test suite, and a parallel job that
                                # builds the image and smoke-tests it, on every push and PR
 Dockerfile                    # production image: API + batch scorer, one image, non-root
@@ -538,6 +806,8 @@ dataset_baseline.json         # SHA-256 hash of the raw Kaggle CSV, recorded onc
 
 # not committed — regenerated on every scoring run:
 retention_campaign_targets.csv
+outputs/                      # saved language-model runs
+data/narration.sqlite3        # the summary cache
 ```
 
 ## Running it
@@ -545,6 +815,7 @@ retention_campaign_targets.csv
 **Installing:** dependencies are split by what you actually intend to do.
 ```
 uv sync                        # serve or score: the runtime set, plus test tooling
+uv sync --group llm            # additionally: written summaries on /explain
 uv sync --group notebook       # additionally: re-train by running the notebook
 ```
 The default set is deliberately small — 32 packages rather than 142 — because
@@ -552,7 +823,10 @@ it is what a deployed container installs, and Jupyter, SHAP, matplotlib and
 seaborn are needed only to *produce* the model, never to *use* it. Splitting
 them out cuts the installed environment from roughly 1.4 GB to 675 MB. If an
 import fails while running the notebook, the `notebook` group is what's
-missing.
+missing. The `llm` group is the OpenAI SDK plus the optional Langfuse tracing
+SDK; without it `/explain` still answers, with drivers and no summary. (`uv sync`
+replaces the environment, so name every group you want in one command:
+`uv sync --group llm --group notebook`.)
 
 **Batch scoring:**
 ```
@@ -656,12 +930,67 @@ the batch path checks against — `config.CATEGORICAL_DOMAINS` mirrors this
 model's `Literal` types, and a test asserts the two agree so the two
 consumers cannot drift into accepting different inputs.
 
+**Explanations:** `POST /explain` takes the same body. For a written summary
+the process needs the OpenAI key, which is passed per command and never read
+from a file by the code:
+```
+uv sync --group llm
+uv run --env-file .env uvicorn api:app
+```
+```json
+{
+  "churn_probability": 0.7443000078201294,
+  "target_for_retention": true,
+  "threshold_used": 0.4,
+  "risk_level": "very high",
+  "drivers": [
+    {"field": "contract", "label": "contract type", "value": "Month-to-month",
+     "vs_other_customers": null, "direction": "raises risk", "contribution": 0.6179567351937294},
+    ...four more
+  ],
+  "explanation": {
+    "risk_level": "very high",
+    "reasons": [
+      {"field": "contract", "direction": "raises risk"},
+      {"field": "contractvstenure", "direction": "raises risk"},
+      {"field": "internetservice", "direction": "raises risk"}
+    ],
+    "summary": "This customer has a very high risk of leaving due to their month-to-month contract, which raises their risk. Their overall commitment is lower than most customers, which also raises their risk. Additionally, they use fiber optic internet service, contributing further to their risk."
+  },
+  "meta": {"status": "ok", "detail": null, "rejection_type": null,
+           "prompt_version": "explanation_v5", "model": "gpt-4o-mini",
+           "cache_hit": true, "attempts": 0, "protected_drivers_omitted": []}
+}
+```
+*(the real response for the same payload as above, served from the cache;
+four of the five drivers left out)* — the first three fields are `/predict`'s,
+by construction: both endpoints score through one function, and `/explain`
+returns a 500 rather than reasons for a different number. `drivers` are five
+where the language model was shown three, so every field in `reasons` can be
+looked up in them.
+
+A missing summary is still a `200`. `meta.status` says why:
+
+| `status` | `explanation` | Meaning |
+|---|---|---|
+| `ok` | the summary | accepted by every check, live or from the cache |
+| `rejected` | `null` | both attempts were refused; `rejection_type` names the check |
+| `unavailable` | `null` | no key, or the `llm` group isn't installed |
+| `error` | `null` | the call was made and failed (network, rate limit, the 15 s timeout) |
+
+The drivers and the decision are present in all four. Only a missing model,
+or a build without the explanation layer, answers `503`.
+
 **Docker:**
 ```
 docker build -t telco-churn .
 
-# API
+# API (drivers on /explain, no summaries: there is no key)
 docker run -p 8000:8000 telco-churn
+
+# API with written summaries. The key comes from .env on the host, never the image.
+uv run --no-sync --env-file .env -- \
+  docker run -p 8000:8000 -e OPENAI_API_KEY -v telco-cache:/data telco-churn
 
 # Batch scoring, against the sample CSV shipped in the image
 docker run telco-churn python telco_model.py
@@ -679,6 +1008,14 @@ mount has nothing to score. `INPUT_PATH` defaults to
 `-v ./data:/data` only for portability — relative bind sources need Docker
 23 or newer.)
 
+The key goes through `uv run --env-file` rather than `docker run --env-file`
+because Docker's own parser keeps quotes as part of the value, so a quoted key
+arrives as `"sk-..."` and every call fails. `telco-cache` is a named volume
+holding the summary cache (`NARRATION_DB=/data/narration.sqlite3`). A bind
+mount of the repo's `data/` would not work here: that folder belongs to the
+host user, and the container's user can read the cache there but never write
+to it.
+
 One image serves both entrypoints, on purpose. The API and the batch script
 have an identical dependency set and share `config.py` and
 `feature_engineering_telco.py`, and the invariant that matters most here is
@@ -693,7 +1030,7 @@ The model is copied in, never trained during the build. The artifact is
 committed and byte-reproducible, and training needs the `notebook` dependency
 group, which the image deliberately does not install.
 
-**What the build verifies.** Two checks run as build steps, so a broken image
+**What the build verifies.** Three checks run as build steps, so a broken image
 fails `docker build` instead of failing at the first request in production:
 
 - `check_model_environment.py` — the same hard version gate CI runs. Because
@@ -705,14 +1042,22 @@ fails `docker build` instead of failing at the first request in production:
   version gate proves the versions match; this proves the pickle actually
   loads and reproduces its prediction, which version equality alone cannot
   show.
+- The explanation layer is present: `api.py` imports it, the prompt file reads
+  and the OpenAI SDK is installed. `api.py` imports the layer optionally, so
+  without this check a missing piece would show up as a quiet `503` on
+  `/explain` at run time.
 
-Both run *after* `USER appuser`, which is how they also confirm the
+All three run *after* `USER appuser`, which is how they also confirm the
 unprivileged user can read the artifact. That is not hypothetical — it caught
 a real defect on the first build: several source files are `0600` in the
 working tree from a restrictive umask, `COPY` preserves host modes, and the
 image would otherwise have built clean and died on its first request with
 `PermissionError` on `config.py`. The `COPY --chmod=0644` in the Dockerfile is
-the fix.
+the fix. The third check caught the same class of defect on its own first
+build: copying the prompt into a new `prompts/` folder created the folder with
+the file's mode, `0644`, which the unprivileged user cannot enter. The image
+built, started and passed its health check, and every `/explain` would have
+failed reading the prompt.
 
 **Size.** 593 MB. Dependencies come from the runtime group plus `--no-dev`
 and the `explain` group (the OpenAI SDK alone, for `/explain`), so neither the
@@ -723,7 +1068,7 @@ added on 2026-10-15 it was 570 MB and 24. The single largest remaining item was 
 project dependency at all: `xgboost` hard-depends on
 `nvidia-nccl-cu13` on Linux, 288 MB of GPU distributed-training libraries a
 CPU inference container never calls. Removing that payload in the builder
-stage removes it, taking the image (as it was then) from 858 MB to 570 MB. It is done there rather than by
+stage took the image (as it was then) from 858 MB to 570 MB. It is done there rather than by
 switching to the `xgboost-cpu` distribution because `check_model_environment.py`
 resolves versions through `importlib.metadata.version("xgboost")`, which
 raises `PackageNotFoundError` under that package and would fail the gate — and
@@ -734,7 +1079,7 @@ the project, leaving `uv.lock`, CI and a local `uv sync` untouched.
 `api.py` loads a pickle and `joblib.load` executes arbitrary code on
 deserialization. `/app` is read-only to that user; `/data` is the only
 writable path, which is where the batch scorer reads its input and writes its
-output. `INPUT_PATH` and `OUTPUT_PATH` default to `/data` inside the image, so
+output, and where the summary cache lives. `INPUT_PATH` and `OUTPUT_PATH` default to `/data` inside the image, so
 mounting a host directory there is the entire interface — the mount shadows
 the sample CSV baked in, which is intended: the shipped sample exists only so
 a bare `docker run` still demonstrates the batch path.
@@ -743,12 +1088,21 @@ a bare `docker run` still demonstrates the batch path.
 ```
 uv run pytest -q
 ```
-166 tests. They cover feature engineering edge cases, API
+788 tests, about 30 seconds. They cover feature engineering edge cases, API
 request/response contracts, the feature-schema validation guard,
 `load_threshold`'s behavior on malformed metadata, batch-input validation,
-and the batch scoring script's I/O contract.
+the batch scoring script's I/O contract, and, in 577 of them, the explanation
+layer: every check in both directions, the retry policy, the cache, `/explain`
+and the faithfulness gate.
 
-Three of the nine test files are deliberately not mocked:
+No test reaches a real language model unless it asks to. The explanation
+tests drive a scripted fake model, and a shared fixture removes
+`OPENAI_API_KEY` from the environment, because the app builds a client at
+startup when the key is set. The ten tests in `test_narrate_live.py` call the
+real API and spend money, so they are deselected by default and run only with
+`uv run pytest -m live`.
+
+Several test files are deliberately not mocked, among them:
 
 - `test_integration.py` fits the real preprocessing pipeline +
   `XGBClassifier` on a small synthetic sample, so the actual
@@ -758,6 +1112,10 @@ Three of the nine test files are deliberately not mocked:
   itself and pins its prediction — see "Artifact pinning" below.
 - `test_input_validation.py` drives the real FastAPI app and the real
   domain checks.
+- `test_explain.py` and `test_explain_api.py` use the committed pipeline,
+  because an attribution needs its real preprocessor and booster. The second
+  also pins `/explain`'s probability and decision to `/predict`'s on all 50
+  simulated customers.
 
 Everything else mocks the model out and runs without a trained `.pkl` on
 disk. A fresh clone can run the full suite immediately, before ever opening
@@ -842,10 +1200,26 @@ and a sane default beats an outage.
   find either way.
 - `simulated_new_customers.csv` is sampled from the held-out test set for
   demo convenience, not genuinely unseen data.
+- **`/explain` spends money on every new customer, and nothing limits who
+  asks.** That is fine on a laptop. Exposed publicly, anyone could run up the
+  OpenAI bill. It would need auth or a rate limit first, along with the auth
+  the API is already missing.
+- **The same customer can be worded differently on a fresh call.**
+  Temperature 0 and a fixed seed narrow the variation, but OpenAI documents
+  `seed` as best-effort. Re-asked days to weeks later, 11 of 15 customers got
+  different (still accepted) wording. The cache keeps a repeat identical; the
+  measurement is over 300 customers for the same reason.
+- **The faithfulness numbers describe one prompt on one model.** Switching
+  `gpt-4o-mini` for anything else fails the CI gate until it is measured
+  again. That is intended: the 300-customer result says nothing about a
+  different model.
+- **`/explain` is not traced.** Langfuse tracing exists for command-line runs
+  only.
 
 ## Stack
 
-Python, pandas, scikit-learn, XGBoost, SHAP, FastAPI, uv, Docker.
+Python, pandas, scikit-learn, XGBoost, SHAP, FastAPI, OpenAI API
+(`gpt-4o-mini`), SQLite, Langfuse (optional), uv, Docker.
 
 ## License
 

@@ -7582,3 +7582,120 @@ documentation from earlier the same day.
   `narration.sqlite3` and `simulated_new_customers.csv`. The test volume was
   removed afterwards.
 - No paid calls. Not committed.
+
+## 2026-10-16 — README: the explanation layer
+
+**Files touched:**
+- `README.md`
+
+**What changed:**
+
+A new section, **"Explaining one customer in plain English"**, sits between
+Interpretability and Repo structure, with two subsections in the README's
+question style: "How the prompt got to v5" and "How faithful is it, measured
+on 300 customers?". It covers:
+- the three-step design (deterministic payload, one model call,
+  deterministic checks)
+- where the reasons come from (exact tree SHAP via `pred_contribs`, checked
+  to reconstruct the probability)
+- what the model is told and why: three factors after protected attributes
+  are removed, a band instead of the probability, comparisons in words
+- the nine checks, as a table, and the retry rule
+- the prompt history v1–v5, with what each run found
+- the v3-vs-v5 habit table (50 customers)
+- the 300-customer result against its limits, including the false positive
+  found and fixed on 2026-10-15
+- the two wording habits left alone (79% refrain, 64% value unstated)
+- the one-off judge and how much it was worth (2 real of 17 flags)
+- the CI gate, the cache (3.8 s vs 0.03 s, measured in the container) and the
+  cost (about $0.0002 a summary, about $0.18 for the whole project)
+
+Elsewhere in the README:
+- **Intro:** one paragraph naming the explanation layer.
+- **Repo structure:** the explanation modules, `faithfulness.py`,
+  `fairness_analysis.py`, `prompts/`, `LLMcalls.ipynb`, `frontend/`, `docs/`,
+  eight more test files, `outputs/` and the cache file. `api.py` lists
+  `/explain`, and `pyproject.toml` lists five groups.
+- **Installing:** `uv sync --group llm`, and why every group has to be named
+  in one command.
+- **API:** an "Explanations" block with the run command, a real `/explain`
+  response (served from the local cache, with four of five drivers
+  elided, so no paid call) and the four `meta.status` values.
+- **Docker:**
+  - the run command with a key and the `telco-cache` volume, and why neither
+    `docker run --env-file` nor a bind mount of `data/` is used
+  - "Three checks", now including the explanation-layer check, and the
+    `prompts/` 0644 defect it caught
+  - the cache's place in `/data`
+- **Docker, incidental:** one awkward sentence fixed in the Size paragraph
+  ("Removing that payload … removes it"), which the assistant had written the
+  day before.
+- **Tests:** "166 tests" → 788, 577 of them on the explanation layer. How no
+  test reaches a real model, and the ten `live` tests. The non-mocked list
+  gains `test_explain.py` and `test_explain_api.py`, and "Three of the nine
+  test files" became "Several test files … among them", because more files
+  than the five listed use the real pipeline.
+- **Known limitations:** four new bullets: `/explain` spends money with
+  nothing limiting who asks; wording varies on a fresh call (11 of 15 in the
+  2026-10-15 live check); the measurement holds for one prompt on one model;
+  `/explain` is not traced.
+- **Stack:** OpenAI API (`gpt-4o-mini`), SQLite, Langfuse (optional).
+
+**Why:** Requested: "readme. same style that has been used. analyze first,
+then write". The README had no mention of the explanation layer, although the
+project's title on the user's CV promises it.
+
+**Requested or incidental:** Requested. The sentence fix in the Docker Size
+paragraph is incidental.
+
+**Verification status:**
+- **Numbers:** every figure was taken from code, tests or recorded runs during
+  the same session, not from memory:
+  - check names and descriptions from `narrate.validate_narrative()`
+  - bands from `narrate.risk_level()`
+  - the v3/v5 table from this file's 2026-10-07 entry
+  - the 300-customer table from the re-rendered
+    `docs/faithfulness_report.txt`
+  - test counts from `pytest --co` per file (sum 789 = 788 passed + 1
+    skipped)
+  - the live-test count from `pytest -m live --co`
+  - the 0-of-50 upper bound computed (7.1%)
+- **The `/explain` example:** a real response produced by the app with no key
+  set, served from the local cache.
+- **Format:** a script confirmed all code fences are closed and every table
+  row has its table's column count.
+- Not committed.
+
+## 2026-10-16 — README: a Fairness section
+
+**Files touched:**
+- `README.md`
+
+**What changed:** A new `## Fairness` section, between the explanation
+section and Repo structure, summarising `fairness_analysis.py` and the
+committed `docs/fairness_report.txt`:
+- the method: no retraining; the rebuilt test split is checked against the
+  published confusion matrix; 95% bootstrap intervals from 2,000 resamples;
+  reliability graded by churner count
+- a table of churn rate, recall and recall gap with its interval for senior,
+  partner, dependents, gender and manual/auto-pay
+- precision has no significant gap; senior × gender is additive
+- every gap favours the group that churns more
+- the cost of senior recall parity: $220, or 3.3% of $6,680, reached by
+  raising the senior cutoff to 0.56, which is levelling down
+- the decision to keep one threshold for everyone, with the impossibility
+  result cited
+- a closing link to the explanation layer, which keeps protected attributes
+  out of summaries
+
+**Why:** The user asked where the fairness section the assistant had offered
+was. Their CV cites the 23-point senior recall gap, and the README did not
+mention the fairness analysis at all.
+
+**Requested or incidental:** Requested.
+
+**Verification status:** Every figure was copied from
+`docs/fairness_report.txt`, and the 2,000 resamples from
+`fairness_analysis.BOOTSTRAP_DRAWS`. That every precision interval includes
+zero was checked against the report's six precision lines. Code fences were
+checked to be closed. Not committed.
