@@ -393,23 +393,61 @@
     font-weight: 600;
     color: var(--muted);
   }
-  /* Grey bars standing in for text that doesn't exist yet. */
+  /* Grey bars standing in for text that is still on its way. */
   .skeleton {
     height: .65rem;
     border-radius: 4px;
     background: var(--track);
     margin-bottom: .4rem;
   }
-  .reasons { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
-  .reasons li {
-    display: flex;
-    justify-content: space-between;
-    gap: .75rem;
+  .ai-summary { margin: 0; font-size: .9rem; }
+
+  /* The explain button is secondary to "Predict churn": outlined, so the
+     page still has one obvious primary action. */
+  button.secondary {
+    width: 100%;
+    background: var(--card);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    padding: .6rem 1rem;
+  }
+  .ai-cost { margin: .5rem 0 0; color: var(--muted); font-size: .75rem; }
+
+  /* A reason there is no summary. Not styled as an error: the decision
+     and the drivers are still true, only the sentence is missing. */
+  .ai-msg {
+    margin: 0 0 .9rem;
+    padding: .6rem .75rem;
+    border-radius: 8px;
+    background: var(--field);
+    border: 1px solid var(--border);
     font-size: .85rem;
   }
-  .reasons .up { color: var(--danger); }
-  .reasons .down { color: var(--ok); }
-  .ai-summary { margin: 0; font-size: .9rem; }
+  .ai-msg.problem { background: var(--danger-bg); border-color: var(--danger-zone); }
+
+  /* The model's own drivers. The bar is each driver's share of the
+     largest one -- a size to compare by eye, not a percentage of risk. */
+  .drivers { list-style: none; margin: 0; padding: 0; display: grid; gap: .6rem; }
+  .drivers li { font-size: .85rem; }
+  .driver-top { display: flex; justify-content: space-between; gap: .75rem; }
+  .driver-name { font-weight: 500; }
+  .driver-value { display: block; color: var(--muted); font-size: .78rem; }
+  .driver-bar { height: 4px; border-radius: 999px; background: var(--track); margin-top: .3rem; }
+  .driver-bar span { display: block; height: 100%; border-radius: 999px; width: var(--w); }
+  .drivers .dir { white-space: nowrap; }
+  .drivers .dir.up { color: var(--danger); }
+  .drivers .dir.down { color: var(--ok); }
+  .driver-bar.up span { background: var(--danger); }
+  .driver-bar.down span { background: var(--ok); }
+  .ai-meta {
+    margin: .9rem 0 0;
+    padding-top: .75rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: .7rem;
+    overflow-wrap: anywhere;
+  }
 
   .hidden { display: none; }
 
@@ -631,29 +669,20 @@
 
     <!-- API URL is a visible field, not a constant buried in the code, so
          the same file works against localhost and a deployed API. -->
-    <!-- The AI explanation. Not wired up yet: the page still calls only
-         /predict. POST /explain exists (2026-10-09) and takes the same
-         body; its `explanation` field is narrate.py's structured output --
-         risk_level, reasons[{field, direction}], summary -- or null, with
-         meta.status saying why. showExplanation() below renders that
-         shape. -->
+    <!-- The AI explanation, on request. A separate call to /explain after
+         /predict has answered, so the decision is never kept waiting on a
+         language model, and a paid call is made only when someone asks.
+         Filled by resetExplanation() and showExplanation() below; this
+         markup is only the state before any customer is scored. -->
     <div id="ai-explanation" class="card">
       <div class="ai-head">
         <p class="panel-label">AI explanation</p>
-        <span class="pill">Coming soon</span>
+        <span class="pill">On request</span>
       </div>
       <p class="ai-note">Why the model reached this decision, in plain
         English. Every sentence is checked against the model's own
         numbers before it is shown.</p>
-      <p class="ai-slot-label">Risk level</p>
-      <div class="skeleton" style="width: 30%"></div>
-      <p class="ai-slot-label">Top reasons</p>
-      <div class="skeleton" style="width: 80%"></div>
-      <div class="skeleton" style="width: 65%"></div>
-      <div class="skeleton" style="width: 72%"></div>
-      <p class="ai-slot-label">Summary</p>
-      <div class="skeleton" style="width: 100%"></div>
-      <div class="skeleton" style="width: 90%"></div>
+      <p class="ai-cost">Score a customer first.</p>
     </div>
 
     <div class="card connection">
@@ -686,6 +715,17 @@ const apiUrlInput = document.getElementById("api-url");
 const resultPanel = document.getElementById("result");
 const errorPanel = document.getElementById("error");
 const placeholderPanel = document.getElementById("placeholder");
+const explanationCard = document.getElementById("ai-explanation");
+
+// What the last successful /predict was asked and answered. The explain
+// button sends exactly this customer, not whatever the form holds now, so
+// the explanation is always for the decision on screen.
+let scored = null;
+
+// Bumped every time the card is reset. An /explain answer that arrives
+// after a newer prediction carries an old ticket and is dropped, so a slow
+// summary can never appear under a different customer's result.
+let explainTicket = 0;
 
 
 /* Read the form into the object shape api.py's Customer model expects. */
@@ -775,36 +815,194 @@ function showValidationError(detail) {
 }
 
 
-/* Renders /explain's `explanation` field (narrate.py's structured output)
-   into the AI card. Not called anywhere yet: the page does not request
-   /explain. `explanation` can be null -- check meta.status first. Text
-   goes in through textContent, never innerHTML: this string is written
-   by a language model. */
-function showExplanation(structured) {
-  const card = document.getElementById("ai-explanation");
-  card.innerHTML = `
-    <div class="ai-head">
-      <p class="panel-label">AI explanation</p>
-      <span class="pill"></span>
-    </div>
-    <p class="ai-slot-label">Top reasons</p>
-    <ul class="reasons"></ul>
-    <p class="ai-slot-label">Summary</p>
-    <p class="ai-summary"></p>
-  `;
-  card.querySelector(".pill").textContent = structured.risk_level + " risk";
-  const list = card.querySelector(".reasons");
-  for (const reason of structured.reasons) {
-    const item = document.createElement("li");
-    const name = document.createElement("span");
-    const direction = document.createElement("span");
-    name.textContent = reason.field;
-    direction.textContent = reason.direction;
-    direction.className = reason.direction === "raises risk" ? "up" : "down";
-    item.append(name, direction);
+/* ---------------------------------------------------------------
+   The AI explanation card.
+
+   Everything that comes back from /explain goes in through textContent,
+   never innerHTML: the summary is written by a language model, and the
+   rest is data. el() is the one way text enters this card.
+   --------------------------------------------------------------- */
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+function cardHead(pillText) {
+  const head = el("div", "ai-head");
+  head.append(el("p", "panel-label", "AI explanation"));
+  if (pillText) head.append(el("span", "pill", pillText));
+  return head;
+}
+
+
+/* Back to "not asked yet". Called after every prediction, successful or
+   not, so an old explanation never sits beside a new result. With no
+   scored customer there is nothing to explain, so there is no button. */
+function resetExplanation() {
+  explainTicket += 1;
+  explanationCard.replaceChildren(
+    cardHead("On request"),
+    el("p", "ai-note", "Why the model reached this decision, in plain English. " +
+      "Every sentence is checked against the model's own numbers before it is shown."),
+  );
+  if (!scored) {
+    explanationCard.append(el("p", "ai-cost", "Score a customer first."));
+    return;
+  }
+  const button = el("button", "secondary", "Explain this decision");
+  button.type = "button";
+  button.addEventListener("click", requestExplanation);
+  explanationCard.append(
+    button,
+    el("p", "ai-cost", "Calls /explain. A customer not asked about before " +
+      "costs one language-model call, a fraction of a cent; repeats are cached."),
+  );
+}
+
+
+function showExplanationLoading() {
+  explanationCard.replaceChildren(
+    cardHead("Working"),
+    el("p", "ai-note", "Asking the language model. A new customer takes a few seconds."),
+  );
+  for (const width of ["100%", "90%", "70%"]) {
+    const bar = el("div", "skeleton");
+    bar.style.width = width;
+    explanationCard.append(bar);
+  }
+}
+
+
+/* The card when /explain itself could not answer: no drivers, no summary.
+   `retry` only where asking again could help -- not for a server without
+   the explanation layer, which will answer 503 every time. */
+function showExplanationProblem(title, message, retry = true) {
+  const box = el("div", "ai-msg problem");
+  box.append(el("strong", null, title), el("br"), document.createTextNode(message));
+  explanationCard.replaceChildren(cardHead(null), box);
+  if (!retry) return;
+  const button = el("button", "secondary", "Try again");
+  button.type = "button";
+  button.addEventListener("click", requestExplanation);
+  explanationCard.append(button);
+}
+
+
+/* Why `explanation` is null, in words a reader can act on. The drivers
+   are shown underneath in every case: they come from the churn model and
+   are true whether or not a sentence could be written. */
+function noSummaryMessage(meta) {
+  if (meta.status === "unavailable") {
+    return "No written summary: the API has no language-model key (or the " +
+      "llm packages are not installed). The drivers below come straight from the model.";
+  }
+  if (meta.status === "rejected") {
+    return "No written summary: both attempts failed a check (" +
+      meta.rejection_type + "), so neither is shown. The drivers below are unaffected.";
+  }
+  return "No written summary: the language-model call failed" +
+    (meta.detail ? " (" + meta.detail + ")" : "") + ". The drivers below are unaffected.";
+}
+
+
+/* One driver's value in words: the value, its comparison with other
+   customers, or both. contractvstenure has only a comparison -- its raw
+   number means nothing to a reader, so the API never sends it. */
+function driverValue(driver) {
+  const parts = [];
+  if (driver.value !== null && driver.value !== undefined) parts.push(String(driver.value));
+  if (driver.vs_other_customers) parts.push(driver.vs_other_customers);
+  return parts.join(" · ");
+}
+
+
+/* A 200 from /explain: the drivers always, the summary when there is one. */
+function showExplanation(data) {
+  const { explanation, drivers, meta } = data;
+  explanationCard.replaceChildren(cardHead(data.risk_level + " risk"));
+
+  if (explanation) {
+    explanationCard.append(el("p", "ai-summary", explanation.summary));
+  } else {
+    explanationCard.append(el("p", "ai-msg", noSummaryMessage(meta)));
+  }
+
+  explanationCard.append(el("p", "ai-slot-label",
+    explanation ? "What drove the score (the summary uses the first three)"
+                : "What drove the score"));
+  const largest = Math.max(...drivers.map(d => Math.abs(d.contribution)), 1e-9);
+  const list = el("ul", "drivers");
+  for (const driver of drivers) {
+    const up = driver.direction === "raises risk";
+    const item = el("li");
+    const top = el("div", "driver-top");
+    const name = el("span", "driver-name", driver.label);
+    name.append(el("span", "driver-value", driverValue(driver)));
+    top.append(name, el("span", "dir " + (up ? "up" : "down"), driver.direction));
+    const bar = el("div", "driver-bar " + (up ? "up" : "down"));
+    const fill = el("span");
+    fill.style.setProperty("--w", (Math.abs(driver.contribution) / largest * 100).toFixed(0) + "%");
+    bar.append(fill);
+    item.append(top, bar);
     list.append(item);
   }
-  card.querySelector(".ai-summary").textContent = structured.summary;
+  explanationCard.append(list);
+
+  const omitted = meta.protected_drivers_omitted || [];
+  if (omitted.length) {
+    explanationCard.append(el("p", "ai-cost",
+      omitted.length + " protected attribute" + (omitted.length > 1 ? "s" : "") +
+      " (age, gender or family status) left out on purpose: the model may use " +
+      "them, but they are never given as a reason."));
+  }
+
+  const source = [meta.model, meta.prompt_version];
+  if (explanation) source.push(meta.cache_hit ? "from cache" : "new summary");
+  explanationCard.append(el("p", "ai-meta", source.filter(Boolean).join(" · ")));
+}
+
+
+async function requestExplanation() {
+  if (!scored) return;
+  const ticket = ++explainTicket;
+  const { baseUrl, customer, prediction } = scored;
+  showExplanationLoading();
+
+  let response, data;
+  try {
+    response = await fetch(baseUrl + "/explain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(customer),
+    });
+    data = await response.json().catch(() => null);
+  } catch (networkError) {
+    if (ticket !== explainTicket) return;
+    showExplanationProblem("Couldn't reach the API",
+      "No response from " + baseUrl + "/explain: " + networkError.message);
+    return;
+  }
+  if (ticket !== explainTicket) return;  // a newer prediction replaced this one
+
+  if (response.status === 503) {
+    showExplanationProblem("No explanations on this server (503)",
+      (data && data.detail) || "This API build does not include the explanation layer.", false);
+  } else if (!response.ok || !data) {
+    showExplanationProblem("The API returned " + response.status,
+      (data && JSON.stringify(data.detail)) || "No details were provided.");
+  } else if (data.churn_probability !== prediction.churn_probability ||
+             data.target_for_retention !== prediction.target_for_retention) {
+    // Same customer, same model: these can only differ if the API was
+    // restarted with another model in between. Reasons for a different
+    // number than the one on screen would be worse than none.
+    showExplanationProblem("The score changed",
+      "/explain scored this customer differently from the result shown. " +
+      "Press Predict churn again, then ask for the explanation.", false);
+  } else {
+    showExplanation(data);
+  }
 }
 
 
@@ -822,11 +1020,17 @@ form.addEventListener("submit", async (event) => {
   submitButton.disabled = true;
   submitButton.textContent = "Scoring...";
 
+  // Cleared before the request, so a failure below leaves no stale
+  // "Explain" button pointing at the previous customer.
+  scored = null;
+  resetExplanation();
+
   try {
+    const customer = buildCustomer();
     const response = await fetch(baseUrl + "/predict", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(buildCustomer()),
+      body: JSON.stringify(customer),
     });
 
     if (response.status === 422) {
@@ -838,7 +1042,10 @@ form.addEventListener("submit", async (event) => {
     } else if (!response.ok) {
       showError(`The API returned ${response.status}`, await response.text());
     } else {
-      showResult(await response.json());
+      const prediction = await response.json();
+      showResult(prediction);
+      scored = { baseUrl, customer, prediction };
+      resetExplanation();
     }
   } catch (networkError) {
     // fetch() only rejects when the request never got an HTTP reply at

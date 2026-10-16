@@ -755,7 +755,7 @@ faithfulness.py               # the 300-customer measurement and the CI gate on 
 fairness_analysis.py          # per-group recall/precision with bootstrap intervals
 prompts/                      # versioned system prompts, each pinned by its sha256
 LLMcalls.ipynb                # read-only viewer for saved language-model runs
-frontend/index.html           # single static page calling /predict
+frontend/index.html           # single static page: /predict, and /explain on a button
 docs/                         # data dictionary, fairness and faithfulness reports,
                                # the committed faithfulness baseline, a demo script
 config.py                     # shared config: threshold loading, feature-schema

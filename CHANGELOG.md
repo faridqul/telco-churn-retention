@@ -7785,3 +7785,115 @@ user will do.
 - Its inline script passes `node --check`.
 - The page was not opened in a browser; nothing it renders changed.
 - To be committed and pushed in this step.
+
+## 2026-10-16 — Frontend: the AI explanation card calls /explain, on a button
+
+**Files touched:**
+- `frontend/index.html`
+
+**What changed:**
+
+The "AI explanation" card is wired. Submitting the form still calls only
+`/predict`, so the decision appears as fast as before. Once a customer is
+scored, the card offers **Explain this decision**. Pressing it sends that same
+customer to `/explain` and fills the card, which can be in one of these
+states:
+- **Before any customer is scored:** "Score a customer first", and no button.
+- **Ready:** the button, plus a line saying it calls `/explain` and that only
+  a customer not asked about before costs a call.
+- **Working:** grey placeholder bars while the request runs.
+- **A summary:**
+  - the risk-level pill and the summary
+  - the five drivers, each with label, value and comparison, direction, and a
+    bar sized against the largest
+  - a note if protected attributes were left out
+  - the model, the prompt version, and whether the summary came from the cache
+- **No summary** (`explanation: null`): a plain message per `meta.status`
+  (no key, rejected by a check, or the call failed), with the five drivers
+  still shown.
+- **Problems:**
+  - a 503 ("No explanations on this server") and a mismatched score ("The
+    score changed") show no retry button, because asking again cannot help
+  - a network error or other status shows a retry button
+
+Correctness rules built in:
+- **The scored customer is explained:** the button sends the customer that
+  was scored, not whatever the form holds by then.
+- **A late answer cannot land under a newer result:** every reset bumps a
+  ticket, and an answer carrying an old ticket is dropped.
+- **The card resets on every new prediction,** including failed ones, so no
+  stale button or explanation stays beside a new result.
+- **Mismatched scores are refused:** if `/explain` returns a different
+  probability or decision from `/predict`'s, nothing is shown.
+- **Text goes in as text:** everything from `/explain` enters the page through
+  `textContent` via one helper, `el()`, never `innerHTML`.
+
+`showExplanation()` was rewritten for the real response and now shows driver
+labels ("overall commitment") instead of raw field ids
+(`contractvstenure`). The unused `.reasons` CSS was removed; new CSS covers
+the secondary button, the message box, the driver list with bars, and the
+meta line, all built from the page's existing colour variables, so dark mode
+follows. The design is otherwise unchanged, at the user's request ("design
+is alright let it be").
+
+**Why:** Requested: "two, button. design is alright let it be". The two
+choices were two requests rather than one, and a button rather than
+automatic.
+
+**Requested or incidental:** Requested. The no-retry rule for 503 and for a
+mismatch is the assistant's addition, made after seeing the first
+screenshot.
+
+**Verification status:**
+- **Headless run, 23 of 23 checks passed:** the page's own script was run in
+  jsdom 24.1.3 (installed in the scratch directory, not the repo) against
+  two real local APIs, both without a key: the full app, and one started
+  from a directory holding only the four core modules, so it answers 503.
+  The checks covered:
+  - the state before scoring
+  - the button after a prediction
+  - the no-key message with five drivers
+  - the cached demo customer, with its summary, pill, labels, cache note and
+    bar scaling (100/46/39/37/30%)
+  - the 503 message, with no retry
+  - a network failure, with retry
+  - a forced score mismatch, refused
+  - the scored customer being sent after the form was edited
+  - a slow `/explain` overtaken by a new prediction, with the late answer
+    dropped
+  - no leftover button after a 422
+  - a summary containing HTML shown as literal text, with no element created
+  - the protected-attribute note
+- **Visual check:** headless Firefox screenshots of the ready, no-key,
+  summary and 503 states at 1280 px, and the summary at 390 px, were looked
+  at. The temporary folder `outputs/frontend_check/` they needed was deleted
+  afterwards.
+- **Not checked:** the page was not opened in a real interactive browser,
+  and no paid call was made (the summary state was served from the cache).
+- Not committed.
+
+## 2026-10-16 — Docs: the page now calls /explain
+
+**Files touched:**
+- `docs/DEMO.md`
+- `CLAUDE.md`
+- `README.md`
+
+**What changed:**
+- `docs/DEMO.md` section 2 no longer says the card is "coming soon". It says
+  what the button does, that it is the only thing on the page that can cost
+  money, and how to see a summary for free (the cached demo customer).
+- `CLAUDE.md`'s `frontend/` row describes the two requests, the button, the
+  scored-customer and late-answer rules, the mismatch refusal and the
+  `textContent` rule.
+- `README.md`'s repo-structure line for `frontend/index.html` mentions
+  `/explain`.
+
+**Why:** All three said the page calls only `/predict`.
+
+**Requested or incidental:** Incidental — documentation of the requested
+frontend change. The `CLAUDE.md` edit is logged here as the convention
+requires.
+
+**Verification status:** Each replaced passage matched exactly once. Not
+committed.

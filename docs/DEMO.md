@@ -94,7 +94,8 @@ the sample customer), so the categories are validated, not trusted.
 
 ## 2. The browser page
 
-`frontend/index.html` is a single static page that calls `/predict`. Serve it
+`frontend/index.html` is a single static page that calls `/predict`, and
+`/explain` when asked. Serve it
 from its own port — **not 8000, which the API is using**:
 
 ```bash
@@ -105,9 +106,20 @@ Open <http://localhost:5500>. The "API base URL" field at the top defaults to
 `http://localhost:8000`, which is where step 1 is listening. The API allows
 any origin, so the page works from any port.
 
-The page has a card reading "AI explanation — coming soon". The `/explain`
-endpoint behind it exists ([section 5c](#5c-the-explanation-over-http--explain));
-the card is not wired to it yet.
+After a customer is scored, the "AI explanation" card offers **Explain this
+decision**. It sends the customer that was just scored to `/explain`
+([section 5c](#5c-the-explanation-over-http--explain)), not whatever the
+form holds by then. The card then shows:
+- the summary, when there is one
+- the five drivers with a bar for their size, always
+- or, when there is no summary, why: no key, rejected by a check, or the
+  call failed
+
+Pressing the button is the only thing that can cost money, and only for a
+customer not asked about before. To see a summary for free, score the
+default demo customer from section 5c, which is already cached. Start the
+API with the key (`uv run --env-file .env uvicorn api:app`) for new
+customers.
 
 ---
 
